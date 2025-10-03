@@ -1,5 +1,6 @@
 log
 assets
+data
 
 */__pycache__/*
 # *.ipynb
@@ -14,5 +15,6 @@ assets
 *.out
 *.txt
 *.png
+*.safetensors
 nohup.out
 .git
