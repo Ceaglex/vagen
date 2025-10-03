@@ -1,0 +1,152 @@
+tag: "t2a_wan_tuning_hy1kw_wonorm"     #  wan_on_audio-beta 
+
+# For hf setting
+push_to_hub   : false
+hub_token     : null
+hub_model_id  : null
+# For logging setting
+tracker_name  : null
+output_dir  : ./log/wan_sd_ttva
+report_to   : wandb   # Options: ["wandb", "null"]
+ckpt_subdir : checkpoints
+logging_subdir: logging
+wandb_init_args:
+  mode      : "online" # online / offline
+  project   : "Veo3"
+  name      : "wan_sd_ttva"
+  tags      : null
+  notes     : ""
+
+
+
+# Model setting 
+# From hf models and modification
+audio_pretrained_model_name_or_path: ./assets/stable-audio-open-1.0  # Required: Path to pretrained model or model identifier  Wan2.1-T2V-1.3B-Diffusers
+audio_transformer_safetensors_path:  ./log/sd_tta_ft_16/checkpoints/checkpoint_13/model.safetensors
+video_pretrained_model_name_or_path: ./assets/Wan2.1-T2V-1.3B-Diffusers  # Required: Path to pretrained model or model identifier  Wan2.1-T2V-1.3B-Diffusers
+video_transformer_safetensors_path:  null
+bridge_config:
+  dual_dit_configs:
+      num_dual_dit_blocks: 4
+      num_input_channels_1: 1536
+      num_input_channels_2: 1536
+      num_qk_channels: 1536
+      num_v_channels: 1536
+      num_heads: 12
+      t_emb_dim_1: 1536
+      t_emb_dim_2: 1536
+      video_bridge_points: [3, 7, 11, 15]
+      audio_bridge_points: [2, 5, 8, 11]
+bridge_safetensors_path: null
+
+# VA Brideg trainable setting
+lora_config:
+  use_lora: false
+  rank: 128  
+  lora_alpha: 64
+  lora_modules: ["to_q", "to_k", "to_v", "to_out", "ffn.net.0.proj", "ffn.net.2", "text_embedder.linear"]
+block_config:
+  train_va: true
+  audio_trainable_blocks: [0, 11, 19, 20, 21, 22, 23]  # 24 blocks in total
+  video_trainable_blocks: [0, 15, 25, 26, 27, 28, 29]  # 30 blocks in total
+optimize_params : ["dual_dit_blocks"] 
+
+
+# Training parameters
+resume_from_checkpoint  : null # /home/chengxin/chengxin/vagen/log/sd_tta_ft_16/checkpoints/checkpoint_13 / null / latest / /home/chengxin/chengxin/vagen/log/sd_tta/checkpoints/checkpoint_5  
+# Seed and precision
+seed            : 42
+mixed_precision : bf16   # Options: ["null", "fp16", "bf16"]
+allow_tf32      : false 
+# matmul_precision  : medium 
+# Steps and saving
+num_train_epochs        : 200        ####
+max_train_steps         : null
+checkpointing_steps     : 1000       #######################
+checkpoints_total_limit : 20 
+# For batch and LR setting
+num_workers             : 4
+train_batch_size_local  : 2
+gradient_accumulation_steps : 1
+learning_rate   : 5e-5     #######################
+scale_lr        : false     ####
+lr_scheduler    : "cosine_with_restarts"  # Options: ["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"]
+lr_warmup_steps : 1000
+lr_num_cycles   : 1
+lr_power        : 1.0
+# For optimizing training
+enable_slicing  : false 
+enable_tiling   : false 
+gradient_checkpointing  : true
+find_unused_parameters  : true  
+
+
+
+# Optimizer
+optimizer       : "adam"  # Options: ["adam", "adamw", "prodigy"]
+use_8bit_adam   : false    #
+adam_beta1      : 0.9
+adam_beta2      : 0.95
+prodigy_beta3     : null   #
+prodigy_decouple  : false  #
+adam_weight_decay : 0.0001
+adam_epsilon      : 0.00000001
+max_grad_norm     : 1.0    # [1.0, 0.5] 
+prodigy_use_bias_correction : false  #
+prodigy_safeguard_warmup    : false  #
+
+
+
+# Dataset information
+# Video processing
+
+
+
+hy_dataloader:
+  video_index_file: "/home/chengxin/chengxin/vagen/data/tta/train_avsync.json"    
+  # dataset setting
+  load_mode: "video_audio"
+  fps : 16
+  max_frames: 81
+  target_sr: 44100            
+  target_channels: 2          
+  target_duration: 5.4        
+  uncond_prob: 0.1
+  negetive_prompt: ""
+  # DataLoader parameters
+  shuffle: true               
+  batch_size: ${train_batch_size_local}
+  num_workers: ${num_workers}
+  prefetch_factor: 2
+
+
+
+
+# Validation
+validation: 
+  scheduler:
+    flow_shift: 5.0
+    num_train_timesteps: 1000
+    
+  eval_steps: ${checkpointing_steps}
+  prompt_index_file: /home/chengxin/chengxin/vagen/data/tta/test_avsync.json           #######################
+  seed: ${seed}
+  num_va_per_prompt: 1
+  num_inference_steps: 40   
+
+  v_negative_prompt : Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards
+  v_num_frames: 81
+  v_height: 480
+  v_width: 832
+  v_guidance_scale: 5
+
+  a_negative_prompt : ""
+  a_duration: 5.4 ####
+  a_guidance_scale: 7    
+
+  data_info:
+    video_info:
+      fps: 16
+    audio_info:
+      sr: 44100
+      channels: 2

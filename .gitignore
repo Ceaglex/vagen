@@ -1,0 +1,18 @@
+log
+assets
+
+*/__pycache__/*
+# *.ipynb
+*.pkl
+*.pth
+*.ckpt
+*.pt
+*.pth.tar
+*.pt.tar
+*.wav
+*.mp4
+*.out
+*.txt
+*.png
+nohup.out
+.git
