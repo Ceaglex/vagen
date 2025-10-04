@@ -227,10 +227,6 @@ def log_validation(
     vajoint_dit.train()
 
 
-
-
-
-
 def training_step(batch, 
                   vajoint_dit,
                   audio_vae,
@@ -319,7 +315,7 @@ def training_step(batch,
     return loss_v, loss_a
 
 
-def checkpointing_step(accelerator, logger, args):
+def checkpointing_step(accelerator, logger, args, ckpt_idx = 0):
     # ckpt_dir = os.path.join(args.output_dir, args.ckpt_subdir)
     ckpt_dir = os.path.join(accelerator.project_dir, 'checkpoints')
     os.makedirs(ckpt_dir, exist_ok=True)
@@ -341,7 +337,7 @@ def checkpointing_step(accelerator, logger, args):
                 removing_checkpoint = os.path.join(ckpt_dir, removing_checkpoint)
                 shutil.rmtree(removing_checkpoint)
 
-    # os.makedirs(save_path, exist_ok=True)
+    # out_path = f"{ckpt_dir}/checkpoints_{ckpt_idx}"
     accelerator.save_state()
     logger.info(f"Saved state to {ckpt_dir}")
 
@@ -571,6 +567,9 @@ def main(args, accelerator):
             # global_step = 0 ####
             initial_global_step = global_step
             first_epoch = global_step // num_update_steps_per_epoch
+            iteration = int(global_step // args.checkpointing_steps)
+            accelerator.project_configuration.iteration = iteration
+            
 
 
 

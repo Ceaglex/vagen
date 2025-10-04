@@ -671,6 +671,9 @@ class DualDiTBlockAdaLN(nn.Module):
         
         return sample_1, sample_2
 
+
+
+
 class CrossDiTBlockAdaLN(nn.Module):
     """
     A DiT block with expert modules.
@@ -754,6 +757,9 @@ class CrossDiTBlockAdaLN(nn.Module):
         sample_2 = sample_2 + gate_mlp_2.unsqueeze(1) * self.mlp_2(sample_2_adaln)
         
         return sample_1, sample_2
+
+
+
 
 class AddFusionDiTBlockAdaLN(nn.Module):
     def __init__(

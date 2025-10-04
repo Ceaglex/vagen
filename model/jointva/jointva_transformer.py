@@ -4,13 +4,14 @@ from typing import Optional, Union, List
 import torch
 import torch.nn as nn
 from safetensors import safe_open
+import numpy as np
 
 from diffusers.models.auto_model import AutoModel
 from diffusers.models.embeddings import get_1d_rotary_pos_embed
 from model.stable_audio.stable_audio_transformer import StableAudioDiTModel, StableAudioProjectionModel
 from model.wan.wan_transformer_for_video import WanTransformer3DModel
 from diffusers.models.modeling_utils import ModelMixin
-from model.jointva.dit_dual_stream import DualDiTBlockAdaLN
+from model.jointva.dit_dual_stream import DualDiTBlockAdaLN, CrossDiTBlockAdaLN
 
 
 class JointVADiTModel(ModelMixin):
@@ -52,22 +53,55 @@ class JointVADiTModel(ModelMixin):
             self.t_emb_dim_2 = bridge_config["dual_dit_configs"].get('t_emb_dim_2', 1536)
             self.video_bridge_points = bridge_config['dual_dit_configs'].get('video_bridge_points', [7, 11, 15])
             self.audio_bridge_points = bridge_config['dual_dit_configs'].get('audio_bridge_points', [5, 8, 11])
+            self.fusion_type = bridge_config['dual_dit_configs'].get('fusion_type', 'bicross') #self.train_config['fusion_type']
             self.dual_dit_blocks = nn.ModuleList([])
-            for _ in range(self.dual_block_nums):
-                self.dual_dit_blocks.append(
-                    DualDiTBlockAdaLN(
-                        self.num_channels_1, 
-                        self.num_channels_2,
-                        self.num_qk_channels,
-                        self.num_v_channels,
-                        self.num_heads,
-                        self.t_emb_dim_1,
-                        self.t_emb_dim_2,
+
+
+            if self.fusion_type == "full_attn":
+                for _ in range(self.dual_block_nums):
+                    self.dual_dit_blocks.append(
+                        DualDiTBlockAdaLN(
+                            self.num_channels_1, 
+                            self.num_channels_2,
+                            self.num_qk_channels,
+                            self.num_v_channels,
+                            self.num_heads,
+                            self.t_emb_dim_1,
+                            self.t_emb_dim_2,
+                        )
                     )
-                )
-            self.rope_pos_embeds_1d_video = get_1d_rotary_pos_embed(self.num_qk_channels//self.num_heads, 32760, use_real=True,)
-            self.rope_pos_embeds_1d_audio = get_1d_rotary_pos_embed(self.num_qk_channels//self.num_heads, 117, use_real=True,)
-            # self.rope_pos_embeds_1d_audio = get_1d_rotary_pos_embed(self.num_qk_channels//self.num_heads, 122, use_real=True,)
+            elif self.fusion_type == "bicross" or self.fusion_type == "v2a" or self.fusion_type == "a2v":
+                for _ in range(self.dual_block_nums):
+                    self.dual_dit_blocks.append(
+                        CrossDiTBlockAdaLN(
+                            self.num_channels_1, 
+                            self.num_channels_2,
+                            self.num_qk_channels,
+                            self.num_v_channels,
+                            self.num_heads,
+                            self.t_emb_dim_1,
+                            self.t_emb_dim_2,
+                            self.fusion_type,
+                        )
+                    )
+            else:
+                raise NotImplementedError()
+
+
+            # #### Regular RoPE ####
+            # self.rope_pos_embeds_1d_video = get_1d_rotary_pos_embed(self.num_qk_channels//self.num_heads, 32760, use_real=True,)
+            # self.rope_pos_embeds_1d_audio = get_1d_rotary_pos_embed(self.num_qk_channels//self.num_heads, 117, use_real=True,)
+            # #### Regular RoPE ####
+
+            #### Aligned RoPE ####
+            v_pos = np.linspace(0, 32760-1, 32760, dtype=int)
+            a_pos = np.linspace(0, 32760-1, 117, dtype=int)
+            self.rope_pos_embeds_1d_video = get_1d_rotary_pos_embed(self.num_qk_channels//self.num_heads, v_pos, use_real=True,)
+            self.rope_pos_embeds_1d_audio = get_1d_rotary_pos_embed(self.num_qk_channels//self.num_heads, a_pos, use_real=True,)
+            #### Aligned RoPE ####
+            
+
+
             self.v_segments, self.a_segments = [], []
             last_split_point = -1
             for point in self.video_bridge_points:
