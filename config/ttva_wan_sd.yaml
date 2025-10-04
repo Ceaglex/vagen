@@ -6,14 +6,14 @@ hub_token     : null
 hub_model_id  : null
 # For logging setting
 tracker_name  : null
-output_dir  : ./log/wan_sd_ttva
+output_dir  : ./log/wan_sd_ttva_55
 report_to   : wandb   # Options: ["wandb", "null"]
 ckpt_subdir : checkpoints
 logging_subdir: logging
 wandb_init_args:
   mode      : "online" # online / offline
   project   : "Veo3"
-  name      : "wan_sd_ttva"
+  name      : "wan_sd_ttva_55"
   tags      : null
   notes     : ""
 
@@ -22,7 +22,7 @@ wandb_init_args:
 # Model setting 
 # From hf models and modification
 audio_pretrained_model_name_or_path: ./assets/stable-audio-open-1.0  # Required: Path to pretrained model or model identifier  Wan2.1-T2V-1.3B-Diffusers
-audio_transformer_safetensors_path:  ./log/sd_tta_ft_16/checkpoints/checkpoint_13/model.safetensors
+audio_transformer_safetensors_path:  ./log_backup/sd_tta_ft_16/checkpoints/checkpoint_13/model.safetensors
 video_pretrained_model_name_or_path: ./assets/Wan2.1-T2V-1.3B-Diffusers  # Required: Path to pretrained model or model identifier  Wan2.1-T2V-1.3B-Diffusers
 video_transformer_safetensors_path:  null
 bridge_config:
@@ -53,7 +53,7 @@ optimize_params : ["dual_dit_blocks"]
 
 
 # Training parameters
-resume_from_checkpoint  : null # /home/chengxin/chengxin/vagen/log/sd_tta_ft_16/checkpoints/checkpoint_13 / null / latest / /home/chengxin/chengxin/vagen/log/sd_tta/checkpoints/checkpoint_5  
+resume_from_checkpoint  : '/home/chengxin/chengxin/vagen/log/wan_sd_ttva_55/checkpoints/checkpoint_8' # /home/chengxin/chengxin/vagen/log/sd_tta_ft_16/checkpoints/checkpoint_13 / null / latest / /home/chengxin/chengxin/vagen/log/sd_tta/checkpoints/checkpoint_5  
 # Seed and precision
 seed            : 42
 mixed_precision : bf16   # Options: ["null", "fp16", "bf16"]
@@ -106,7 +106,7 @@ hy_dataloader:
   video_index_file: "/home/chengxin/chengxin/vagen/data/tta/train_avsync.json"    
   # dataset setting
   load_mode: "video_audio"
-  fps : 16
+  fps : 15
   max_frames: 81
   target_sr: 44100            
   target_channels: 2          
@@ -146,7 +146,7 @@ validation:
 
   data_info:
     video_info:
-      fps: 16
+      fps: ${hy_dataloader.fps}
     audio_info:
       sr: 44100
       channels: 2

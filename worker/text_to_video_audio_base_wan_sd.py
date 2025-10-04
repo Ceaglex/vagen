@@ -568,7 +568,7 @@ def main(args, accelerator):
             accelerator.print( f"Resuming from checkpoint {cur_full_path}" )
             accelerator.load_state(cur_full_path)
             global_step = (int(dir_name.split('_')[-1]) + 1) * args.checkpointing_steps
-            global_step = 0 ####
+            # global_step = 0 ####
             initial_global_step = global_step
             first_epoch = global_step // num_update_steps_per_epoch
 
