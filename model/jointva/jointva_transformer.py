@@ -95,7 +95,7 @@ class JointVADiTModel(ModelMixin):
 
             #### Aligned RoPE ####
             v_pos = np.linspace(0, 32760-1, 32760, dtype=int)
-            a_pos = np.linspace(0, 32760-1, 117, dtype=int)
+            a_pos = np.linspace(0, 32760-1, 110, dtype=int)
             self.rope_pos_embeds_1d_video = get_1d_rotary_pos_embed(self.num_qk_channels//self.num_heads, v_pos, use_real=True,)
             self.rope_pos_embeds_1d_audio = get_1d_rotary_pos_embed(self.num_qk_channels//self.num_heads, a_pos, use_real=True,)
             #### Aligned RoPE ####

@@ -73,10 +73,15 @@ class VideoAudioDataset(Dataset):
         start_frames = int(start_duration * self.fps)
         num_frames = video.shape[0] - start_frames
         target_frames = num_frames - (num_frames - 1) % 4  # Closest 4n+1
-        if self.max_frames is not None:    
-            target_frames = min(target_frames, self.max_frames)
-        video = video[start_frames : start_frames + target_frames]  # Trim from the end    
-        
+        target_frames = min(target_frames, self.max_frames)
+
+        video = video[start_frames : start_frames + target_frames]    
+        if target_frames < self.max_frames:
+            print(f"Pad Frame from {video.shape[0]} to {num_frames}")
+            video = torch.cat([video, video[-1:].repeat(self.max_frames - target_frames, 1, 1, 1)], dim=0)
+
+
+
         # Permute to [C, T, H, W]
         video = video.permute(3, 0, 1, 2)
         return video
@@ -216,23 +221,23 @@ class VideoAudioDataset(Dataset):
                 waveform = waveform.repeat(2, 1)
             else:
                 raise
-        target_samples = int(self.target_duration * sr)
-        current_samples = waveform.shape[1]
-        if current_samples > target_samples:
-            max_start = current_samples - target_samples
-            start = random.randint(0, max_start)
-            end = start+target_samples
-            waveform = waveform[:, start:end]
-        else: # current_samples <= target_samples:
-            padding = target_samples - current_samples
-            start = 0
-            end = current_samples
-            waveform = torch.nn.functional.pad(waveform, (0, padding), mode='constant', value=0)
         if sr != self.target_sr:
             resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=self.target_sr)
             waveform = resampler(waveform)
             sr = self.target_sr
 
+        target_samples = int(self.target_duration * sr)
+        current_samples = waveform.shape[1]
+        if current_samples > target_samples:
+            max_start = current_samples - target_samples
+            start = random.randint(0, max_start-1)
+            end = start+target_samples
+            waveform = waveform[:, start:end]
+        elif current_samples < target_samples:
+            padding = target_samples - current_samples
+            start = 0
+            end = current_samples
+            waveform = torch.nn.functional.pad(waveform, (0, padding), mode='constant', value=0)
 
         # Video Pixel
         start_duration = start / sr
@@ -241,7 +246,7 @@ class VideoAudioDataset(Dataset):
 
         # TODO: Better Uncond Configuration
         if random.uniform(0,1) < self.uncond_prob:
-            v_prompt = "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards"
+            v_prompt = ""
         if random.uniform(0,1) < self.uncond_prob:
             a_prompt = ""
 
