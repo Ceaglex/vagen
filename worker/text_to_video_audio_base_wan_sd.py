@@ -141,7 +141,7 @@ def log_validation(
                     negative_prompt_embeds=None,
                     max_sequence_length=512,
                     device=accelerator.device,
-                    dtype=infer_dtype # 必须是float32 / bfloat16，float16有问题，不知道为何
+                    dtype=infer_dtype, # 必须是float32 / bfloat16，float16有问题，不知道为何
                 ) # type: ignore
                 a_prompt_embeds, a_negative_prompt_embeds = encode_prompt_sd(
                     a_prompt,
@@ -180,8 +180,8 @@ def log_validation(
                         a_encoder_hidden_states=a_prompt_embeds, 
                         a_rotary_embedding=a_rotary_embedding,
                         return_dict=False)
-                    v_noise_pred = v_noise_pred[0]
-                    a_noise_pred = a_noise_pred[0]
+                    v_noise_pred = v_noise_pred[0].to(infer_dtype)
+                    a_noise_pred = a_noise_pred[0].to(infer_dtype)
 
                     if do_classifier_free_guidance:
                         v_noise_uncond, a_noise_uncond = vajoint_dit(
@@ -193,8 +193,8 @@ def log_validation(
                             a_encoder_hidden_states=a_negative_prompt_embeds, 
                             a_rotary_embedding=a_rotary_embedding,
                             return_dict=False)
-                        v_noise_uncond = v_noise_uncond[0]
-                        a_noise_uncond = a_noise_uncond[0]
+                        v_noise_uncond = v_noise_uncond[0].to(infer_dtype)
+                        a_noise_uncond = a_noise_uncond[0].to(infer_dtype)
                         v_noise_pred = v_noise_uncond + v_guidance_scale * (v_noise_pred - v_noise_uncond)
                         a_noise_pred = a_noise_uncond + a_guidance_scale * (a_noise_pred - a_noise_uncond)
 

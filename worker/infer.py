@@ -6,20 +6,21 @@ import torchaudio
 from diffusers.utils import export_to_video
 from worker.base import prepare_config, prepare_everything
 from model.jointva.pipeline_jointva import JointVAPipeline
-
+from utils.va_processing import add_audio_to_video
 
 
 
 
 def main(args, accelerator):
 
-    load_dtype = torch.float32  
+    load_dtype = torch.bfloat16  
     infer_dtype = torch.bfloat16
 
     pipeline = JointVAPipeline(
         load_dtype = load_dtype,
         infer_dtype = infer_dtype,
         device = accelerator.device,
+        jointdit_safetensor_path = getattr(args, 'jointdit_safetensor_path', None),
         bridge_config = getattr(args, 'bridge_config', None),
         bridge_weights_path = getattr(args, 'bridge_safetensors_path', None),
         audio_vae_path = getattr(args, 'audio_pretrained_model_name_or_path', None),
@@ -108,8 +109,12 @@ def main(args, accelerator):
             )
             gen_video, gen_audio = gen_video_audio[0] # bs = 1
             for i in range(len(gen_video)): # num_video = 1
-                export_to_video(gen_video[i], f"{output_dir}/{path.split('/')[-1][:-4]}.mp4", fps=args.data_info.video_info.fps)
-                torchaudio.save(f"{output_dir}/{path.split('/')[-1][:-4]}.wav", gen_audio[i].cpu().to(torch.float32), sample_rate= args.data_info.audio_info.sr)
+                v_path = f"{output_dir}/{path.split('/')[-1][:-4]}.mp4"
+                a_path = f"{output_dir}/{path.split('/')[-1][:-4]}.wav"
+                o_path = f"{output_dir}/{path.split('/')[-1][:-4]}_.mp4"
+                export_to_video(gen_video[i], v_path, fps=args.data_info.video_info.fps)
+                torchaudio.save(a_path, gen_audio[i].cpu().to(torch.float32), sample_rate= args.data_info.audio_info.sr)
+                add_audio_to_video(video_path = v_path, audio_path = a_path, output_path = o_path)
             # break #####
 
 

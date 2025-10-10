@@ -14,6 +14,35 @@ from diffusers.models.modeling_utils import ModelMixin
 from model.jointva.dit_dual_stream import DualDiTBlockAdaLN, CrossDiTBlockAdaLN
 
 
+
+
+def make_video_times(frames: int, tokens_per_frame: int, duration_s: float) -> np.ndarray:  # -> torch.Tensor:
+    """
+    返回 [L_v] 的秒级时间戳（中心对齐），L_v=frames*tokens_per_frame
+    """
+    # frame_idx = torch.arange(frames, dtype=dtype)
+    # frame_centers = (frame_idx + 0.5) * (duration_s / frames)
+    # times = frame_centers.repeat_interleave(tokens_per_frame)
+
+    frame_idx = np.arange(frames)
+    frame_centers = (frame_idx + 0.5) * (duration_s / frames)
+    times = np.repeat(frame_centers, tokens_per_frame)
+    return times
+
+
+def make_audio_times(length: int, rate_hz: float) -> np.ndarray:   # -> torch.Tensor:
+    """
+    返回 [L_a] 的秒级时间戳（中心对齐），L_a=length，rate_hz 为音频token率(Hz)
+    """
+    # idx = torch.arange(length, dtype=dtype)
+    # times = (idx + 0.5) / rate_hz
+
+    idx = np.arange(length)
+    times = (idx + 0.5) / rate_hz
+    return times
+
+
+
 class JointVADiTModel(ModelMixin):
     _supports_gradient_checkpointing = True
 
@@ -94,8 +123,11 @@ class JointVADiTModel(ModelMixin):
             # #### Regular RoPE ####
 
             #### Aligned RoPE ####
-            v_pos = np.linspace(0, 32760-1, 32760, dtype=int)
-            a_pos = np.linspace(0, 32760-1, 110, dtype=int)
+            # v_pos = np.linspace(0, 110-1, 21, dtype=int)    # 21 frames
+            # v_pos = np.repeat(v_pos, 30*52)                 # w*h
+            # a_pos = np.linspace(0, 110-1, 110,   dtype=int) # 110
+            v_pos = make_video_times(frames = 21, tokens_per_frame = 30 * 52, duration_s = 5.0)
+            a_pos = make_audio_times(length = 110, rate_hz = 21.5)
             self.rope_pos_embeds_1d_video = get_1d_rotary_pos_embed(self.num_qk_channels//self.num_heads, v_pos, use_real=True,)
             self.rope_pos_embeds_1d_audio = get_1d_rotary_pos_embed(self.num_qk_channels//self.num_heads, a_pos, use_real=True,)
             #### Aligned RoPE ####

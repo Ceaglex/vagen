@@ -26,6 +26,7 @@ class JointVAPipeline:
             load_dtype = torch.float32,
             infer_dtype = torch.float16,
             device = "cpu",
+            jointdit_safetensor_path: Optional[str] = None,
             bridge_config: Optional[dict] = None,
             bridge_weights_path: Optional[str] = None,
             audio_vae_path: Optional[str] = None,
@@ -68,7 +69,10 @@ class JointVAPipeline:
             video_transformer_weights_path = video_transformer_weights_path,
             bridge_config = bridge_config,
             bridge_weights_path = bridge_weights_path
-        ).to(self.device)
+        )
+        if jointdit_safetensor_path is not None:
+            self._load_weights(self.joint_va, jointdit_safetensor_path)
+        self.joint_va.eval().requires_grad_(False).to(self.device)
 
         # Audio Model Components
         self.audio_vae = self._init_class(AutoModel, audio_vae_path, subfolder="vae", device=self.device)
@@ -331,7 +335,7 @@ class JointVAPipeline:
                         negative_prompt_embeds=None,
                         max_sequence_length=512,
                         device=self.device,
-                        dtype=torch.float32, # 必须是float32 / bfloat16，float16有问题，不知道为何
+                        dtype=self.infer_dtype, # 必须是float32 / bfloat16，float16有问题，不知道为何
                     ) # type: ignore
                     a_prompt_embeds, a_negative_prompt_embeds = encode_prompt_sd(
                         a_prompt,
@@ -346,11 +350,10 @@ class JointVAPipeline:
 
                     a_latents = randn_tensor(a_shape, generator=v_generator, device=self.device, dtype=self.infer_dtype)
                     v_latents = randn_tensor(v_shape, generator=a_generator, device=self.device, dtype=self.infer_dtype)
-
-
                     self.v_step_scheduler.set_timesteps(num_inference_steps, device=self.device)
                     self.a_step_scheduler.set_timesteps(num_inference_steps, device=self.device)
                     timesteps = self.v_step_scheduler.timesteps
+
                     for i, t in tqdm(enumerate(timesteps)):
                         timestep = t.expand(num_va_per_prompt)
                         v_latent_model_input = v_latents
@@ -405,3 +408,13 @@ class JointVAPipeline:
         gc.collect()
         free_memory()
         return results
+
+
+
+    def _load_weights(self, module, safetensor_path):
+        if safetensor_path is not None:
+            state_dict = {}
+            with safe_open(safetensor_path, framework="pt", device="cpu") as f: 
+                for key in f.keys():
+                    state_dict[key] = f.get_tensor(key)
+            module.load_state_dict(state_dict, strict=True)

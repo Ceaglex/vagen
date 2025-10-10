@@ -1,15 +1,4 @@
 
-output_dir  : ./log/sd_tta_ft_16_infer
-logging_subdir: logging
-
-
-# Model setting 
-scheduler:
-  flow_shift: 5.0
-  num_train_timesteps: 1000
-
-
-
 # ############################################### text-to-audio inference ################################################
 # infer_mode : tta
 # audio_pretrained_model_name_or_path: ./assets/stable-audio-open-1.0  # Required: Path to pretrained model or model identifier  Wan2.1-T2V-1.3B-Diffusers
@@ -59,11 +48,23 @@ scheduler:
 
 
 
+output_dir  : ./log/wan_sd_ttva_55_bi_infer
+logging_subdir: logging
+
+
+# Scheduler setting 
+scheduler:
+  flow_shift: 8.0
+  num_train_timesteps: 1000
+
+
+
 
 ################################################ text-to-video-audio inference ################################################
 infer_mode : ttva
+jointdit_safetensor_path: /home/chengxin/chengxin/vagen/log/wan_sd_ttva_55_bi/checkpoints/checkpoint_0/model.safetensors
 audio_pretrained_model_name_or_path: ./assets/stable-audio-open-1.0  # Required: Path to pretrained model or model identifier  Wan2.1-T2V-1.3B-Diffusers
-audio_transformer_safetensors_path: /home/chengxin/chengxin/vagen/log/sd_tta_ft_16/checkpoints/checkpoint_13/model.safetensors
+audio_transformer_safetensors_path: null
 video_pretrained_model_name_or_path: ./assets/Wan2.1-T2V-1.3B-Diffusers  # Required: Path to pretrained model or model identifier  Wan2.1-T2V-1.3B-Diffusers
 video_transformer_safetensors_path: null
 bridge_config:
@@ -78,11 +79,7 @@ bridge_config:
       t_emb_dim_2: 1536
       video_bridge_points: [3, 7, 11, 15]
       audio_bridge_points: [2, 5, 8, 11]
-  lora_config:
-    use_lora: True
-    lora_rank: 128
-    lora_alpha: 64
-    lora_target_modules: ["to_q", "to_k", "to_v", "to_out.0"]
+      fusion_type: bicross
 bridge_safetensors_path: null
 
 
@@ -91,15 +88,16 @@ ttav_infer_config:
   num_va_per_prompt: 1
   num_inference_steps: 40
 
+                         ####
   v_negative_prompt : Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards
   v_num_frames: 81
   v_height: 480
   v_width: 832
-  v_guidance_scale: 5
+  v_guidance_scale: 6    ####
 
   a_negative_prompt : ""
-  a_duration: 5.4 ####
-  a_guidance_scale: 7    
+  a_duration: 5.1        ####
+  a_guidance_scale: 6    ####
 
   
 

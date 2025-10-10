@@ -1,4 +1,4 @@
-tag: "t2a_wan_tuning_hy1kw_wonorm"     #  wan_on_audio-beta 
+tag: "t2a_wan_tuning_hy1kw_wonorm"     
 
 # For hf setting
 push_to_hub   : false
@@ -6,14 +6,14 @@ hub_token     : null
 hub_model_id  : null
 # For logging setting
 tracker_name  : null
-output_dir  : ./log/wan_sd_ttva_55_bi
-report_to   : wandb   # Options: ["wandb", "null"]
+output_dir  : ./log/wan_sd_ttva_55_bi_infer
+report_to   : wandb   
 ckpt_subdir : checkpoints
 logging_subdir: logging
 wandb_init_args:
-  mode      : "online" # online / offline  #######################
+  mode      : "offline" # online / offline  
   project   : "Veo3"
-  name      : "wan_sd_ttva_55_bi"
+  name      : "wan_sd_ttva_55_bi_infer"
   tags      : null
   notes     : ""
 
@@ -21,9 +21,9 @@ wandb_init_args:
 
 # Model setting 
 # From hf models and modification
-audio_pretrained_model_name_or_path: ./assets/stable-audio-open-1.0  # Required: Path to pretrained model or model identifier  Wan2.1-T2V-1.3B-Diffusers
+audio_pretrained_model_name_or_path: ./assets/stable-audio-open-1.0 
 audio_transformer_safetensors_path:  ./log_backup/sd_tta_ft_16/checkpoints/checkpoint_13/model.safetensors
-video_pretrained_model_name_or_path: ./assets/Wan2.1-T2V-1.3B-Diffusers  # Required: Path to pretrained model or model identifier  Wan2.1-T2V-1.3B-Diffusers
+video_pretrained_model_name_or_path: ./assets/Wan2.1-T2V-1.3B-Diffusers  
 video_transformer_safetensors_path:  null
 bridge_config:
   dual_dit_configs:
@@ -54,7 +54,7 @@ optimize_params : ["dual_dit_blocks"]
 
 
 # Training parameters
-resume_from_checkpoint  : null # '/home/chengxin/chengxin/vagen/log/wan_sd_ttva_55/checkpoints/checkpoint_8'
+resume_from_checkpoint  : /home/chengxin/chengxin/vagen/log/wan_sd_ttva_55_bi/checkpoints/checkpoint_0 # '/home/chengxin/chengxin/vagen/log/wan_sd_ttva_55/checkpoints/checkpoint_8'
 # Seed and precision
 seed            : 42
 mixed_precision : bf16   # Options: ["null", "fp16", "bf16"]
@@ -66,7 +66,7 @@ max_train_steps         : null
 checkpointing_steps     : 1000 #######################  
 checkpoints_total_limit : 20 
 # For batch and LR setting
-num_workers             : 4
+num_workers             : 16
 train_batch_size_local  : 2
 gradient_accumulation_steps : 1
 learning_rate   : 5e-5     #######################
@@ -85,16 +85,16 @@ find_unused_parameters  : true
 
 # Optimizer
 optimizer       : "adam"  # Options: ["adam", "adamw", "prodigy"]
-use_8bit_adam   : false    #
+use_8bit_adam   : false    
 adam_beta1      : 0.9
 adam_beta2      : 0.95
-prodigy_beta3     : null   #
-prodigy_decouple  : false  #
+prodigy_beta3     : null   
+prodigy_decouple  : false  
 adam_weight_decay : 0.0001
 adam_epsilon      : 0.00000001
 max_grad_norm     : 1.0    # [1.0, 0.5] 
-prodigy_use_bias_correction : false  #
-prodigy_safeguard_warmup    : false  #
+prodigy_use_bias_correction : false  
+prodigy_safeguard_warmup    : false  
 
 
 
@@ -107,13 +107,13 @@ hy_dataloader:
   video_index_file: "/home/chengxin/chengxin/vagen/data/tta/train_avsync.json"    
   # dataset setting
   load_mode: "video_audio"
-  fps : 15
-  max_frames: 81
+  fps : 16                  
+  max_frames: 81            
   target_sr: 44100            
   target_channels: 2          
-  target_duration: 5.4        
+  target_duration: 5.1      ##
   uncond_prob: 0.1
-  negetive_prompt: ""
+  negetive_prompt: ""       ##
   # DataLoader parameters
   shuffle: true               
   batch_size: ${train_batch_size_local}
@@ -126,7 +126,7 @@ hy_dataloader:
 # Validation
 validation: 
   scheduler:
-    flow_shift: 5.0
+    flow_shift: 8.0          ##
     num_train_timesteps: 1000
     
   eval_steps: ${checkpointing_steps}
@@ -135,19 +135,20 @@ validation:
   num_va_per_prompt: 1
   num_inference_steps: 40   
 
+                      ## 
   v_negative_prompt : Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards
-  v_num_frames: 81
+  v_num_frames: ${hy_dataloader.max_frames}
   v_height: 480
   v_width: 832
-  v_guidance_scale: 5
+  v_guidance_scale: 6        ##
 
   a_negative_prompt : ""
-  a_duration: 5.4 ####
-  a_guidance_scale: 7    
+  a_duration: ${hy_dataloader.target_duration}  
+  a_guidance_scale: 6        ##
 
   data_info:
     video_info:
       fps: ${hy_dataloader.fps}
     audio_info:
-      sr: 44100
-      channels: 2
+      sr: ${hy_dataloader.target_sr}
+      channels: ${hy_dataloader.target_channels}

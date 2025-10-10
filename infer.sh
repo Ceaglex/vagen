@@ -6,8 +6,8 @@ export TOKENIZERS_PARALLELISM=false
 # export https_proxy=http://star-proxy.oa.com:3128
 
 
-GPU_IDS="0,1,2,3,4,5,6,7"
-GPU_NUMS=4
+GPU_IDS="1,2,3,4,5,6,7"
+GPU_NUMS=8
 
 
 : "
