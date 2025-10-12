@@ -1,0 +1,146 @@
+tag: "ovi_fusion_debug"     
+
+# For hf setting
+push_to_hub   : false
+hub_token     : null
+hub_model_id  : null
+# For logging setting
+tracker_name  : null
+output_dir  : ./log/ovi_fusion_debug
+report_to   : wandb   
+ckpt_subdir : checkpoints
+logging_subdir: logging
+wandb_init_args:
+  mode      : "offline" # online / offline  
+  project   : "Ovi"
+  name      : "ovi_fusion_debug"
+  tags      : null
+  notes     : ""
+
+# Model setting for Ovi
+ckpt_dir: "/home/chengxin/chengxin/Ovi/ckpts"  # Ovi checkpoint directory
+fusion_checkpoint_path: "/home/chengxin/chengxin/Ovi/ckpts/Ovi/model.safetensors"  # Fusion model checkpoint
+
+# Ovi model specific settings
+audio_pretrained_model_name_or_path: null  # Not used for Ovi
+audio_transformer_safetensors_path: null   # Not used for Ovi
+video_pretrained_model_name_or_path: null  # Not used for Ovi
+video_transformer_safetensors_path: null   # Not used for Ovi
+bridge_config: null  # Not used for Ovi
+bridge_safetensors_path: null  # Not used for Ovi
+
+# Ovi model trainable setting
+lora_config:
+  use_lora: false
+  rank: 128  
+  lora_alpha: 64
+  lora_modules: ["to_q", "to_k", "to_v", "to_out", "ffn.net.0.proj", "ffn.net.2", "text_embedder.linear"]
+block_config:
+  train_va: false   
+  audio_trainable_blocks: [19, 20, 21, 22, 23]  # 24 blocks in total
+  video_trainable_blocks: [25, 26, 27, 28, 29]  # 30 blocks in total
+# Ovi fusion model trainable parameters - adjust based on your training strategy
+optimize_params : ["fusion"] 
+
+
+# Training parameters
+resume_from_checkpoint  : null # '/home/chengxin/chengxin/vagen/log/wan_sd_ttva_55/checkpoints/checkpoint_8'
+# Seed and precision
+seed            : 103
+mixed_precision : bf16   # Options: ["null", "fp16", "bf16"]
+allow_tf32      : false 
+# matmul_precision  : medium 
+# Steps and saving
+num_train_epochs        : 400        
+max_train_steps         : null
+checkpointing_steps     : 1000 #######################  
+checkpoints_total_limit : 40 
+# For batch and LR setting
+num_workers             : 4
+train_batch_size_local  : 2
+gradient_accumulation_steps : 1
+learning_rate   : 5e-5     #######################
+scale_lr        : false     
+lr_scheduler    : "cosine_with_restarts"  # Options: ["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"]
+lr_warmup_steps : 1000
+lr_num_cycles   : 1
+lr_power        : 1.0
+# For optimizing training
+enable_slicing  : false 
+enable_tiling   : false 
+gradient_checkpointing  : true
+find_unused_parameters  : true  
+
+
+
+# Optimizer
+optimizer       : "adam"  # Options: ["adam", "adamw", "prodigy"]
+use_8bit_adam   : false    
+adam_beta1      : 0.9
+adam_beta2      : 0.95
+prodigy_beta3     : null   
+prodigy_decouple  : false  
+adam_weight_decay : 0.0001
+adam_epsilon      : 0.00000001
+max_grad_norm     : 1.0    # [1.0, 0.5] 
+prodigy_use_bias_correction : false  
+prodigy_safeguard_warmup    : false  
+
+
+
+# Dataset information
+# Video processing
+
+
+
+hy_dataloader:
+  video_index_file: "/home/chengxin/chengxin/vagen/data/ttva/avsync_test.json"  
+  batch_size : ${train_batch_size_local}  
+  # dataset setting
+  load_mode: "video_audio"
+  video_size: [992, 512]
+  fps : 24                  
+  max_frames: 121            
+  target_sr: 16000            
+  target_channels: 1          
+  target_duration: 5.1      ##
+  uncond_prob: 0.5          
+  # # # # negetive_prompt: ""    ##   
+  # DataLoader parameters
+  shuffle: true               
+  num_workers: ${num_workers}
+  prefetch_factor: 2
+
+
+
+
+# Validation
+validation: 
+  scheduler:
+    flow_shift: 5.0          ##
+    num_train_timesteps: 1000
+  
+  eval_steps: ${checkpointing_steps}
+  prompt_index_file: /home/chengxin/chengxin/vagen/data/ttva/avsync_debug.json   
+  batch_size : 1
+  num_va_per_prompt: 1
+  seed: ${seed}
+  slg_layer: 11
+  num_inference_steps: 40   
+
+                      ## 
+  v_negative_prompt : "jitter, bad hands, blur, distortion"
+  v_num_frames: ${hy_dataloader.max_frames}
+  video_size: ${hy_dataloader.video_size}
+  v_guidance_scale: 4  ##    
+
+  a_negative_prompt : "robotic, muffled, echo, distorted"
+  a_duration: ${hy_dataloader.target_duration}  
+  a_guidance_scale: 3  ##
+
+  data_info:
+    video_info:
+      fps: ${hy_dataloader.fps}
+    audio_info:
+      sr: ${hy_dataloader.target_sr}
+      channels: ${hy_dataloader.target_channels}

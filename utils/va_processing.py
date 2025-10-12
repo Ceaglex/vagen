@@ -7,6 +7,105 @@ import torchaudio
 from tqdm import tqdm
 from moviepy import VideoFileClip, AudioFileClip
 
+import tempfile
+from typing import Optional
+import numpy as np
+from moviepy import ImageSequenceClip, AudioFileClip
+from scipy.io import wavfile
+import math
+
+
+
+def snap_hw_to_multiple_of_32(h: int, w: int, area = 720 * 720) -> tuple[int, int]:
+    """
+    Scale (h, w) to match a target area if provided, then snap both
+    dimensions to the nearest multiple of 32 (min 32).
+    
+    Args:
+        h (int): original height
+        w (int): original width
+        area (int, optional): target area to scale to. If None, no scaling is applied.
+    
+    Returns:
+        (new_h, new_w): dimensions adjusted
+    """
+    if h <= 0 or w <= 0:
+        raise ValueError(f"h and w must be positive, got {(h, w)}")
+
+    # If a target area is provided, rescale h, w proportionally
+    if area is not None and area > 0:
+        current_area = h * w
+        scale = math.sqrt(area / float(current_area))
+        h = int(round(h * scale))
+        w = int(round(w * scale))
+
+    # Snap to nearest multiple of 32
+    def _n32(x: int) -> int:
+        return max(32, int(round(x / 32)) * 32)
+    return _n32(h), _n32(w)
+
+
+
+def save_video(
+    output_path: str,
+    video_numpy: np.ndarray,
+    audio_numpy: Optional[np.ndarray] = None,
+    sample_rate: int = 16000,
+    fps: int = 24,
+) -> str:
+    """
+    Combine a sequence of video frames with an optional audio track and save as an MP4.
+
+    Args:
+        output_path (str): Path to the output MP4 file.
+        video_numpy (np.ndarray): Numpy array of frames. Shape (C, F, H, W).
+                                  Values can be in range [-1, 1] or [0, 255].
+        audio_numpy (Optional[np.ndarray]): 1D or 2D numpy array of audio samples, range [-1, 1].
+        sample_rate (int): Sample rate of the audio in Hz. Defaults to 16000.
+        fps (int): Frames per second for the video. Defaults to 24.
+
+    Returns:
+        str: Path to the saved MP4 file.
+    """
+
+    # Validate inputs
+    assert isinstance(video_numpy, np.ndarray), "video_numpy must be a numpy array"
+    assert video_numpy.ndim == 4, "video_numpy must have shape (C, F, H, W)"
+    assert video_numpy.shape[0] in {1, 3}, "video_numpy must have 1 or 3 channels"
+
+    if audio_numpy is not None:
+        assert isinstance(audio_numpy, np.ndarray), "audio_numpy must be a numpy array"
+        assert np.abs(audio_numpy).max() <= 1.0, "audio_numpy values must be in range [-1, 1]"
+
+    # Reorder dimensions: (C, F, H, W) → (F, H, W, C)
+    video_numpy = video_numpy.transpose(1, 2, 3, 0)
+
+    # Normalize frames if values are in [-1, 1]
+    if video_numpy.max() <= 1.0:
+        video_numpy = np.clip(video_numpy, -1, 1)
+        video_numpy = ((video_numpy + 1) / 2 * 255).astype(np.uint8)
+    else:
+        video_numpy = video_numpy.astype(np.uint8)
+
+    # Convert numpy array to a list of frames
+    frames = list(video_numpy)
+    clip = ImageSequenceClip(frames, fps=fps)
+
+    if audio_numpy is not None:
+        with tempfile.NamedTemporaryFile(suffix=".wav", mode='wb', delete=False) as temp_audio_file:
+            wavfile.write(
+                temp_audio_file.name,
+                sample_rate,
+                (audio_numpy * 32767).astype(np.int16),
+            )
+            audio_clip = AudioFileClip(temp_audio_file.name)
+            clip.audio = audio_clip
+
+    final_clip = clip
+    final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac", fps=fps, logger=None)
+    final_clip.close()
+    return output_path
+
 
 
 def add_audio_to_video(video_path, audio_path, output_path):

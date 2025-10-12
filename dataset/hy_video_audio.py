@@ -21,8 +21,7 @@ class VideoAudioDataset(Dataset):
                  value_range=(-1, 1), 
                  target_sr=44100,
                  target_channels=2,
-                 target_duration=5.0,
-                 negetive_prompt=''):
+                 target_duration=5.0):
         with open(json_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
 
@@ -46,12 +45,6 @@ class VideoAudioDataset(Dataset):
         self.target_duration = target_duration
 
 
-        # negetive prompt
-        self.negetive_prompt = negetive_prompt
-        # self.negetive_prompt_embed = None
-        # if negetive_prompt_embed:
-        #     self.negetive_prompt_embed = torch.load(negetive_prompt_embed) if negetive_prompt_embed is not None else None
-        
 
 
 
@@ -129,7 +122,7 @@ class VideoAudioDataset(Dataset):
             "video_path": video_path,
             "video_frames": video,
             "prompt": prompt,
-            "negetive_prompt": self.negetive_prompt,
+            # "negetive_prompt": self.negetive_prompt,
             # "negetive_prompt_embed": self.negetive_prompt_embed if self.negetive_prompt_embed is not None else 0
         }
     
@@ -143,7 +136,7 @@ class VideoAudioDataset(Dataset):
             "video_path": video_path,
             "video_latent": video_latent,
             "prompt": prompt,
-            "negetive_prompt": self.negetive_prompt,
+            # "negetive_prompt": self.negetive_prompt,
             # "negetive_prompt_embed": self.negetive_prompt_embed if self.negetive_prompt_embed is not None else 0
         }
     
@@ -157,7 +150,7 @@ class VideoAudioDataset(Dataset):
             "video_path": video_path,
             "audio_latent": audio_latent,
             "prompt": prompt,
-            "negetive_prompt": self.negetive_prompt,
+            # "negetive_prompt": self.negetive_prompt,
             # "negetive_prompt_embed": self.negetive_prompt_embed if self.negetive_prompt_embed is not None else 0
         }
 
@@ -258,19 +251,6 @@ class VideoAudioDataset(Dataset):
             "v_prompt": v_prompt,
             "a_prompt": a_prompt,
         }
-# def collate_fn(batch):
-#     # batch: list of dict
-#     max_len = max(i['video_frames'] for item in batch)  # T'
-
-#     video_frames =  torch.stack([torch.nn.functional.pad(i['video_frames'], (0, max_len - i['video_frames'].shape[-1]), mode='constant', value=0) for i in batch])
-#     prompt = [i['prompt'] for i in batch]
-#     # length = torch.tensor([i['length'] for i in batch])
-
-#     return {
-#         "video_frames": video_frames,
-#         "prompt": prompt,
-#     }
-
 
 
 
@@ -288,7 +268,7 @@ def build_video_loader(args):
         target_sr=args.target_sr if 'target_sr' in args else 44100,
         target_channels=args.target_channels if 'target_channels' in args else 2,
         target_duration=args.target_duration if 'target_duration' in args else 5.0,
-        negetive_prompt=args.negetive_prompt if 'negetive_prompt' in args else '',
+        # negetive_prompt=args.negetive_prompt if 'negetive_prompt' in args else '',
         # negetive_prompt_embed=args.negetive_prompt_embed if 'negetive_prompt_embed' in args else None,
 
     )
