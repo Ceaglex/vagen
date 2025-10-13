@@ -1,4 +1,4 @@
-tag: "ovi_fusion_debug"     
+tag: "ovi_fusion_train"     
 
 # For hf setting
 push_to_hub   : false
@@ -6,14 +6,14 @@ hub_token     : null
 hub_model_id  : null
 # For logging setting
 tracker_name  : null
-output_dir  : ./log/ovi_fusion_debug
+output_dir  : ./log/ovi_fusion_train
 report_to   : wandb   
 ckpt_subdir : checkpoints
 logging_subdir: logging
 wandb_init_args:
-  mode      : "offline" # online / offline  
+  mode      : "online" # online / offline  
   project   : "Ovi"
-  name      : "ovi_fusion_debug"
+  name      : "ovi_fusion_train"
   tags      : null
   notes     : ""
 
