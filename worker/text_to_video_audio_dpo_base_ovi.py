@@ -1,4 +1,4 @@
-import pdb; pdb.set_trace()
+# import pdb; pdb.set_trace()
 import logging, math, os, shutil
 import numpy as np
 from pathlib import Path
@@ -289,7 +289,7 @@ def training_step(batch,
 
         ## TODO: Check REF MODEL RESULTS
         # Forward pass through ref fusion model
-        fusion_model.set_adapter("ref")
+        fusion_model.module.set_adapter("ref") if hasattr(fusion_model, "module") else fusion_model.set_adapter("ref")
         pred_vid_ref, pred_audio_ref = fusion_model(
             vid=[v_latent_model_input[i] for i in range(batch_size)],
             audio=[a_latent_model_input[i] for i in range(batch_size)],
@@ -305,7 +305,7 @@ def training_step(batch,
         # fusion_model_ref.to('cpu')
 
     # Forward pass through fusion model
-    fusion_model.set_adapter("learner")
+    fusion_model.module.set_adapter("learner") if hasattr(fusion_model, "module") else fusion_model.set_adapter("learner")
     pred_vid, pred_audio = fusion_model(
         vid=[v_latent_model_input[i] for i in range(batch_size)],
         audio=[a_latent_model_input[i] for i in range(batch_size)],
@@ -341,7 +341,7 @@ def training_step(batch,
 
 
     scale_term = -0.5 * dpo_beta
-    
+
     v_inside_term = scale_term * (v_model_diff - v_ref_diff)
     # v_implicit_acc = (v_inside_term > 0).sum().float() / v_inside_term.size(0)
     v_dpo_loss = -F.logsigmoid(v_inside_term).mean()
@@ -455,6 +455,7 @@ def main(args, accelerator):
     """ ****************************  Optimization setting.  **************************** """
     fusion_model.requires_grad_(False)
     if args.lora_config.use_lora == True:
+        # TODO: Better Lora config
         lora_config = LoraConfig(
             r=args.lora_config.rank,
             lora_alpha=args.lora_config.lora_alpha,
@@ -599,17 +600,17 @@ def main(args, accelerator):
         fusion_model.train()
         for step, batch in enumerate(train_dataloader):
             
-            # if global_step % args.validation.eval_steps == 0:
-            #     log_validation(
-            #         config=args.validation,
-            #         fusion_model=fusion_model,
-            #         vae_model_video=vae_model_video,
-            #         vae_model_audio=vae_model_audio,
-            #         text_model=text_model,
-            #         infer_dtype=infer_dtype,
-            #         accelerator=accelerator,
-            #         global_step=global_step
-            #     )
+            if global_step % args.validation.eval_steps == 0:
+                log_validation(
+                    config=args.validation,
+                    fusion_model=fusion_model,
+                    vae_model_video=vae_model_video,
+                    vae_model_audio=vae_model_audio,
+                    text_model=text_model,
+                    infer_dtype=infer_dtype,
+                    accelerator=accelerator,
+                    global_step=global_step
+                )
 
             # TRAIN
             models_to_accumulate = [fusion_model]
