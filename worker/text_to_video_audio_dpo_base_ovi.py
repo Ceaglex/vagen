@@ -1,4 +1,4 @@
-# import pdb; pdb.set_trace()
+import pdb; pdb.set_trace()
 import logging, math, os, shutil
 import numpy as np
 from pathlib import Path
@@ -29,7 +29,7 @@ from diffusers.utils.import_utils import is_wandb_available
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.utils.torch_utils import randn_tensor
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, PeftModel, get_peft_model
 
 from worker.base import prepare_config, prepare_everything
 from dataset.hy_video_audio import build_video_loader
@@ -231,6 +231,7 @@ def training_step(batch,
                   dpo_beta,
                   load_dtype):
 
+    # TODO: Check DPO Loss and dataset W-L data pair order
     text_prompt = batch['v_prompt']  # Use video prompt as main prompt
     text_prompt = [f"{batch['v_prompt'][i]} <AUDCAP>{batch['a_prompt'][i]}<ENDAUDCAP>" for i in range(len(batch['v_prompt']))] # Use video caption as the main prompt
     waveform = batch['audio_waveform'][:,0,:]
@@ -287,7 +288,6 @@ def training_step(batch,
         max_seq_len_video = v_latent_model_input.shape[-1] * v_latent_model_input.shape[-2] * v_latent_model_input.shape[-3] // (_patch_size_h * _patch_size_w)
 
 
-        ## TODO: Check REF MODEL RESULTS
         # Forward pass through ref fusion model
         fusion_model.module.set_adapter("ref") if hasattr(fusion_model, "module") else fusion_model.set_adapter("ref")
         pred_vid_ref, pred_audio_ref = fusion_model(
@@ -302,7 +302,8 @@ def training_step(batch,
         )
         pred_vid_ref = torch.stack(pred_vid_ref, dim = 0).detach()
         pred_audio_ref = torch.stack(pred_audio_ref, dim = 0).detach()
-        # fusion_model_ref.to('cpu')
+
+
 
     # Forward pass through fusion model
     fusion_model.module.set_adapter("learner") if hasattr(fusion_model, "module") else fusion_model.set_adapter("learner")
@@ -319,8 +320,6 @@ def training_step(batch,
     pred_vid = torch.stack(pred_vid, dim = 0)
     pred_audio = torch.stack(pred_audio, dim = 0)
 
-
-    # TODO: Check DPO Loss
     v_model_losses = (pred_vid.float() - v_target.float()).pow(2).mean(dim=[1, 2, 3, 4])
     v_model_losses_w, v_model_losses_l = v_model_losses.chunk(2)
     v_model_diff = v_model_losses_w - v_model_losses_l
@@ -360,7 +359,8 @@ def training_step(batch,
     return v_dpo_loss, a_dpo_loss
 
 
-def checkpointing_step(accelerator, logger, args, ckpt_idx = 0):
+# TODO: Add save lora
+def checkpointing_step(model, accelerator, logger, args, ckpt_idx = 0):
     ckpt_dir = os.path.join(accelerator.project_dir, 'checkpoints')
     os.makedirs(ckpt_dir, exist_ok=True)
     
@@ -379,8 +379,10 @@ def checkpointing_step(accelerator, logger, args, ckpt_idx = 0):
             for removing_checkpoint in removing_checkpoints:
                 removing_checkpoint = os.path.join(ckpt_dir, removing_checkpoint)
                 shutil.rmtree(removing_checkpoint)
-
+    # Save whole model lora
     accelerator.save_state()
+    # Save lora
+    model.module.save_pretrained(f"{ckpt_dir}/checkpoints_{ckpt_idx}") if hasattr(model, "module") else model.save_pretrained(f"{ckpt_dir}/checkpoints_{ckpt_idx}")
     logger.info(f"Saved state to {ckpt_dir}")
 
 
@@ -455,16 +457,32 @@ def main(args, accelerator):
     """ ****************************  Optimization setting.  **************************** """
     fusion_model.requires_grad_(False)
     if args.lora_config.use_lora == True:
-        # TODO: Better Lora config
         lora_config = LoraConfig(
             r=args.lora_config.rank,
             lora_alpha=args.lora_config.lora_alpha,
             target_modules=args.lora_config.lora_modules,
             lora_dropout=0.1,
             bias="none",)
-        fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="ref")
-        fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="learner")
+
+        # TODO: Add load lora
+        if hasattr(args.lora_config, 'lora_load_path') and args.lora_config.lora_load_path:
+            print(f"Loading LoRA weights from {args.lora_config.lora_load_path}")
+            try:
+                fusion_model = PeftModel.from_pretrained(
+                    fusion_model, 
+                    args.lora_config.lora_load_path,
+                    adapter_name="learner"
+                )
+            except Exception as e:
+                print(f"Failed to load LoRA weights: {e} \n Initializing new LoRA adapters")
+                fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="ref")
+                fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="learner")
+        else:
+            fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="ref")
+            fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="learner")
+
         fusion_model.set_adapter("learner")
+        fusion_model.print_trainable_parameters()
     
 
     if args.block_config.train_va == True:
@@ -600,19 +618,20 @@ def main(args, accelerator):
         fusion_model.train()
         for step, batch in enumerate(train_dataloader):
             
-            if global_step % args.validation.eval_steps == 0:
-                log_validation(
-                    config=args.validation,
-                    fusion_model=fusion_model,
-                    vae_model_video=vae_model_video,
-                    vae_model_audio=vae_model_audio,
-                    text_model=text_model,
-                    infer_dtype=infer_dtype,
-                    accelerator=accelerator,
-                    global_step=global_step
-                )
+            # if global_step % args.validation.eval_steps == 0:
+            #     log_validation(
+            #         config=args.validation,
+            #         fusion_model=fusion_model,
+            #         vae_model_video=vae_model_video,
+            #         vae_model_audio=vae_model_audio,
+            #         text_model=text_model,
+            #         infer_dtype=infer_dtype,
+            #         accelerator=accelerator,
+            #         global_step=global_step
+            #     )
 
             # TRAIN
+            # TODO: Add ref model update
             models_to_accumulate = [fusion_model]
             with accelerator.accumulate(models_to_accumulate):
                 loss_v, loss_a = training_step(batch, 
@@ -638,7 +657,11 @@ def main(args, accelerator):
                 progress_bar.update(1)
                 global_step += 1
                 if global_step % args.checkpointing_steps == 0:
-                    checkpointing_step(accelerator, logger, args)
+                    checkpointing_step(model = fusion_model,
+                                       accelerator = accelerator, 
+                                       logger = logger, 
+                                       args = args, 
+                                       ckpt_idx = int(global_step // args.checkpointing_steps - 1))
 
             logs = {"loss": loss_v.detach().item() + loss_a.detach().item(),
                     "loss_v": loss_v.detach().item(), "loss_a": loss_a.detach().item(), 
