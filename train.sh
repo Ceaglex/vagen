@@ -7,7 +7,7 @@ export TOKENIZERS_PARALLELISM=false
 
 
 GPU_IDS="0,1,2,3,4,5,6,7"
-GPU_NUMS=1
+GPU_NUMS=8
 
 
 : "

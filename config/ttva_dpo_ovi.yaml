@@ -56,7 +56,7 @@ allow_tf32      : false
 # Steps and saving
 num_train_epochs        : 20        
 max_train_steps         : null
-checkpointing_steps     : 2 #######################  
+checkpointing_steps     : 400 #######################  
 checkpoints_total_limit : 40 
 # For batch and LR setting
 num_workers             : 4

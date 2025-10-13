@@ -1,4 +1,4 @@
-import pdb; pdb.set_trace()
+# import pdb; pdb.set_trace()
 import logging, math, os, shutil
 import numpy as np
 from pathlib import Path
@@ -8,6 +8,7 @@ import soundfile as sf
 import json
 import time
 
+import random
 import torch
 import torch.nn.functional as F
 import torchaudio
@@ -53,6 +54,8 @@ logger = get_logger(__name__)
 
 def log_validation(
     config,
+    video_config,
+    audio_config,
     fusion_model,
     vae_model_video,
     vae_model_audio,
@@ -110,8 +113,8 @@ def log_validation(
             video_h, video_w = snap_hw_to_multiple_of_32(video_h, video_w, area=snap_area)
             video_latent_h, video_latent_w = video_h // 16, video_w // 16
                     
-            audio_latent_channel = fusion_model.module.audio_config['in_dim'] if hasattr(fusion_model, "module") else fusion_model.audio_config['in_dim']
-            video_latent_channel = fusion_model.module.video_config['in_dim'] if hasattr(fusion_model, "module") else fusion_model.video_config['in_dim']
+            audio_latent_channel = audio_config['in_dim'] 
+            video_latent_channel = video_config['in_dim'] 
             audio_latent_length = 157  # Fixed for Ovi model
             video_latent_length = 31   # Fixed for Ovi model
 
@@ -355,11 +358,12 @@ def training_step(batch,
     # # Calculate SFT MSE losses
     # loss_v = nn_func.mse_loss(pred_vid.float(), v_target.float(), reduction="mean")
     # loss_a = nn_func.mse_loss(pred_audio.float(), a_target.float(), reduction="mean")
-    
+
+
     return v_dpo_loss, a_dpo_loss
 
 
-# TODO: Add save lora
+
 def checkpointing_step(model, accelerator, logger, args, ckpt_idx = 0):
     ckpt_dir = os.path.join(accelerator.project_dir, 'checkpoints')
     os.makedirs(ckpt_dir, exist_ok=True)
@@ -382,7 +386,8 @@ def checkpointing_step(model, accelerator, logger, args, ckpt_idx = 0):
     # Save whole model lora
     accelerator.save_state()
     # Save lora
-    model.module.save_pretrained(f"{ckpt_dir}/checkpoints_{ckpt_idx}") if hasattr(model, "module") else model.save_pretrained(f"{ckpt_dir}/checkpoints_{ckpt_idx}")
+    lora_save_path = f"{ckpt_dir}/checkpoint_{ckpt_idx}"
+    model.module.save_pretrained(lora_save_path) if hasattr(model, "module") else model.save_pretrained(lora_save_path)
     logger.info(f"Saved state to {ckpt_dir}")
 
 
@@ -395,17 +400,14 @@ def main(args, accelerator):
 
     # Initialize Ovi fusion model
     fusion_model, video_config, audio_config = init_fusion_score_model_ovi(rank=accelerator.device, meta_init=True)
-    fusion_model.video_config = video_config
-    fusion_model.audio_config = audio_config
+    # fusion_model.video_config = video_config
+    # fusion_model.audio_config = audio_config
     if args.fusion_checkpoint_path is not None:
         load_fusion_checkpoint(fusion_model, checkpoint_path=args.fusion_checkpoint_path, from_meta=True)
     fusion_model = fusion_model.requires_grad_(False).to(dtype=load_dtype).to(device=accelerator.device).eval()
     fusion_model.set_rope_params()
+    
 
-    # fusion_model_ref = None
-    # fusion_model_ref = copy.deepcopy(fusion_model)
-    # fusion_model_ref = fusion_model_ref.requires_grad_(False).to(dtype=load_dtype).to(device=accelerator.device).eval()
-    # fusion_model_ref.set_rope_params()
 
     # Initialize VAE models
     vae_model_video = init_wan_vae_2_2(args.ckpt_dir, rank=accelerator.device)
@@ -414,7 +416,6 @@ def main(args, accelerator):
     vae_model_audio = init_mmaudio_vae(args.ckpt_dir, rank=accelerator.device)
     vae_model_audio.requires_grad_(False).eval().to(load_dtype)
     
-
     # Initialize text model
     text_model = init_text_model(args.ckpt_dir, rank=accelerator.device, cpu_offload=False)
 
@@ -444,8 +445,8 @@ def main(args, accelerator):
     if torch.backends.mps.is_available() and weight_dtype == torch.bfloat16:
         raise ValueError("Mixed precision training with bfloat16 is not supported on MPS. Please use fp16 (recommended) or fp32 instead.")
     
-    if args.mixed_precision == "fp16":
-        cast_training_params([fusion_model], dtype=torch.float32)
+    # if args.mixed_precision == "fp16":
+    #     cast_training_params([fusion_model], dtype=torch.float32)
 
     """ ****************************  Data setting.  **************************** """
     logger.info("=> Preparing training data...", main_process_only=True)
@@ -460,30 +461,28 @@ def main(args, accelerator):
         lora_config = LoraConfig(
             r=args.lora_config.rank,
             lora_alpha=args.lora_config.lora_alpha,
-            target_modules=args.lora_config.lora_modules,
+            target_modules=list(args.lora_config.lora_modules),
             lora_dropout=0.1,
             bias="none",)
 
-        # TODO: Add load lora
+        # TODO: Check load lora
         if hasattr(args.lora_config, 'lora_load_path') and args.lora_config.lora_load_path:
             print(f"Loading LoRA weights from {args.lora_config.lora_load_path}")
-            try:
-                fusion_model = PeftModel.from_pretrained(
-                    fusion_model, 
-                    args.lora_config.lora_load_path,
-                    adapter_name="learner"
-                )
-            except Exception as e:
-                print(f"Failed to load LoRA weights: {e} \n Initializing new LoRA adapters")
-                fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="ref")
-                fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="learner")
-        else:
+            fusion_model = PeftModel.from_pretrained(
+                fusion_model, 
+                args.lora_config.lora_load_path,
+                adapter_name="learner"
+            )
             fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="ref")
+        else:
+            torch.manual_seed(args.seed); random.seed(args.seed)
+            fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="ref")
+            torch.manual_seed(args.seed); random.seed(args.seed)
             fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="learner")
 
         fusion_model.set_adapter("learner")
         fusion_model.print_trainable_parameters()
-    
+
 
     if args.block_config.train_va == True:
         for block_idx in args.block_config.audio_trainable_blocks:
@@ -539,7 +538,6 @@ def main(args, accelerator):
     fusion_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare( 
         fusion_model, optimizer, train_dataloader, lr_scheduler 
     )
-
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -618,17 +616,19 @@ def main(args, accelerator):
         fusion_model.train()
         for step, batch in enumerate(train_dataloader):
             
-            # if global_step % args.validation.eval_steps == 0:
-            #     log_validation(
-            #         config=args.validation,
-            #         fusion_model=fusion_model,
-            #         vae_model_video=vae_model_video,
-            #         vae_model_audio=vae_model_audio,
-            #         text_model=text_model,
-            #         infer_dtype=infer_dtype,
-            #         accelerator=accelerator,
-            #         global_step=global_step
-            #     )
+            if global_step % args.validation.eval_steps == 0:
+                log_validation(
+                    config=args.validation,
+                    video_config=video_config,
+                    audio_config=audio_config,
+                    fusion_model=fusion_model,
+                    vae_model_video=vae_model_video,
+                    vae_model_audio=vae_model_audio,
+                    text_model=text_model,
+                    infer_dtype=infer_dtype,
+                    accelerator=accelerator,
+                    global_step=global_step
+                )
 
             # TRAIN
             # TODO: Add ref model update
