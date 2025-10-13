@@ -31,16 +31,16 @@ bridge_safetensors_path: null  # Not used for Ovi
 
 # Ovi model trainable setting
 lora_config:
-  use_lora: false
+  use_lora: true
   rank: 128  
   lora_alpha: 64
-  lora_modules: ["to_q", "to_k", "to_v", "to_out", "ffn.net.0.proj", "ffn.net.2", "text_embedder.linear"]
+  lora_modules: ['k_fusion', 'v_fusion', 'pre_attn_norm_fusion.weight', 'pre_attn_norm_fusion.bias']
 block_config:
   train_va: false   
   audio_trainable_blocks: [19, 20, 21, 22, 23]  # 24 blocks in total
   video_trainable_blocks: [25, 26, 27, 28, 29]  # 30 blocks in total
 # Ovi fusion model trainable parameters - adjust based on your training strategy
-optimize_params : ["fusion"] 
+optimize_params : null # ["fusion"] 
 
 
 # Training parameters
@@ -57,9 +57,10 @@ checkpointing_steps     : 1000 #######################
 checkpoints_total_limit : 40 
 # For batch and LR setting
 num_workers             : 4
-train_batch_size_local  : 2
+train_batch_size_local  : 1
 gradient_accumulation_steps : 1
 learning_rate   : 5e-5     #######################
+dpo_beta : 0.1 
 scale_lr        : false     
 lr_scheduler    : "cosine_with_restarts"  # Options: ["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"]
 lr_warmup_steps : 1000
@@ -97,7 +98,7 @@ hy_dataloader:
   video_index_file: "/home/chengxin/chengxin/vagen/data/ttva/avsync_test.json"  
   batch_size : ${train_batch_size_local}  
   # dataset setting
-  load_mode: "video_audio"
+  load_mode: "video_audio_dpo" # video_audio_dpo  video_audio
   video_size: [992, 512]
   fps : 24                  
   max_frames: 121            
@@ -121,7 +122,7 @@ validation:
     num_train_timesteps: 1000
   
   eval_steps: ${checkpointing_steps}
-  prompt_index_file: /home/chengxin/chengxin/vagen/data/ttva/avsync_debug.json   
+  prompt_index_file: /home/chengxin/chengxin/vagen/data/ttva/avsync_debug.json   #######################
   batch_size : 1
   num_va_per_prompt: 1
   seed: ${seed}
