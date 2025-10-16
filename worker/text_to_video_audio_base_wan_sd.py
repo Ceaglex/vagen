@@ -297,6 +297,7 @@ def training_step(batch,
         a_target = a_noise - a_latents
         v_target = v_noise - v_latents
 
+
     v_noise_pred, a_noise_pred = vajoint_dit(
         timestep=timesteps,
         v_latent_model_input=v_latent_model_input,

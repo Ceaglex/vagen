@@ -8,7 +8,9 @@ import soundfile as sf
 import json
 import time
 
+import random
 import torch
+import torch.nn.functional as F
 import torchaudio
 import torch.nn.functional as nn_func
 from torch.cuda.amp import autocast
@@ -28,7 +30,7 @@ from diffusers.utils.import_utils import is_wandb_available
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.utils.torch_utils import randn_tensor
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, PeftModel, get_peft_model
 
 from worker.base import prepare_config, prepare_everything
 from dataset.hy_video_audio import build_video_loader
@@ -48,166 +50,12 @@ from utils.va_processing import snap_hw_to_multiple_of_32
 logger = get_logger(__name__)
 
 
-# def log_validation(
-#     config,
-#     fusion_model,
-#     vae_model_video,
-#     vae_model_audio,
-#     text_model,
-#     infer_dtype,
-#     accelerator,
-#     global_step
-#     ):
-
-#     with open(config.prompt_index_file, 'r', encoding='utf-8') as f:
-#         data = json.load(f)
-#         data = list(data.items())
-#     idx = accelerator.process_index if accelerator.process_index < len(data) else 0
-#     step_range = accelerator.num_processes if accelerator.num_processes <= len(data) else len(data)
-#     data = data[idx::step_range]
-#     output_dir = os.path.join(accelerator.project_dir, args.logging_subdir, str(global_step))
-#     os.makedirs(output_dir, exist_ok=True)
-#     print(f"Saving path :{output_dir}")
-    
-#     # Initialize generators
-#     v_generator = torch.Generator(accelerator.device).manual_seed(config.seed) if config.seed is not None else None
-#     a_generator = torch.Generator(accelerator.device).manual_seed(config.seed) if config.seed is not None else None
-    
-#     # Initialize schedulers
-#     scheduler_video = FlowUniPCMultistepScheduler(num_train_timesteps=config.scheduler.num_train_timesteps, shift=1, use_dynamic_shifting=False)
-#     scheduler_audio = FlowUniPCMultistepScheduler(num_train_timesteps=config.scheduler.num_train_timesteps, shift=1, use_dynamic_shifting=False)
-
-#     num_va_per_prompt = config.num_va_per_prompt
-#     batch_size = config.batch_size
-#     sample_steps = config.num_inference_steps
-#     shift = config.scheduler.flow_shift
-#     v_negative_prompt = config.v_negative_prompt
-#     a_negative_prompt = config.a_negative_prompt
-#     # # v_num_frames = config.v_num_frames
-#     v_height = config.video_size[0]
-#     v_width = config.video_size[1]
-#     v_guidance_scale = config.v_guidance_scale
-#     a_guidance_scale = config.a_guidance_scale
-#     slg_layer = config.slg_layer
-#     do_classifier_free_guidance = (a_guidance_scale > 1.0) or (v_guidance_scale > 1.0)
-#     fusion_model.eval()
-
-
-#     with torch.no_grad():
-#         for path, info in data:
-#             text_prompt = f"{info['video_caption']} <AUDCAP>{info['audio_caption']}<ENDAUDCAP>" # Use video caption as the main prompt
-        
-#             video_h, video_w = v_height, v_width
-#             snap_area = max(video_h * video_w, 720 * 720)
-#             video_h, video_w = snap_hw_to_multiple_of_32(video_h, video_w, area=snap_area)
-#             video_latent_h, video_latent_w = video_h // 16, video_w // 16
-                    
-#             audio_latent_channel = fusion_model.module.audio_config['in_dim'] if hasattr(fusion_model, "module") else fusion_model.audio_config['in_dim']
-#             video_latent_channel = fusion_model.module.video_config['in_dim'] if hasattr(fusion_model, "module") else fusion_model.video_config['in_dim']
-#             audio_latent_length = 157  # Fixed for Ovi model
-#             video_latent_length = 31   # Fixed for Ovi model
-                    
-#             scheduler_video.set_timesteps(sample_steps, device=accelerator.device, shift=shift)
-#             timesteps_video = scheduler_video.timesteps
-#             scheduler_audio.set_timesteps(sample_steps, device=accelerator.device, shift=shift)
-#             timesteps_audio = scheduler_audio.timesteps
-
-#             text_embeddings = text_model([text_prompt, v_negative_prompt, a_negative_prompt], text_model.device)
-#             text_embeddings = [emb.to(infer_dtype).to(accelerator.device) for emb in text_embeddings]
-#             text_embeddings_audio_pos = text_embeddings[0]
-#             text_embeddings_video_pos = text_embeddings[0]
-#             text_embeddings_video_neg = text_embeddings[1]
-#             text_embeddings_audio_neg = text_embeddings[2]
-
-#             # Initialize latents
-#             video_noise = torch.randn((video_latent_channel, video_latent_length, video_latent_h, video_latent_w), device=accelerator.device, dtype=infer_dtype, generator=v_generator)
-#             audio_noise = torch.randn((audio_latent_length, audio_latent_channel), device=accelerator.device, dtype=infer_dtype, generator=a_generator)
-                            
-#             # Calculate sequence lengths
-#             max_seq_len_audio = audio_noise.shape[0]
-#             patch_size = fusion_model.module.video_model.patch_size if hasattr(fusion_model, "module") else fusion_model.video_model.patch_size
-#             _patch_size_h, _patch_size_w = patch_size[1], patch_size[2]
-#             max_seq_len_video = video_noise.shape[1] * video_noise.shape[2] * video_noise.shape[3] // (_patch_size_h * _patch_size_w)
-
-
-#             with torch.amp.autocast('cuda', enabled=True, dtype=infer_dtype):
-
-#                 for i, (t_v, t_a) in tqdm(enumerate(zip(timesteps_video, timesteps_audio)), 
-#                                         total=len(timesteps_video), desc="Sampling"):
-#                     # print(video_noise.mean(), video_noise[0], audio_noise.mean(), audio_noise[0])
-#                     timestep_input = torch.full((1,), t_v, device=accelerator.device)
-                            
-#                     # Forward pass with positive prompts
-#                     pos_forward_args = {
-#                         'audio_context': [text_embeddings_audio_pos],
-#                         'vid_context': [text_embeddings_video_pos],
-#                         'vid_seq_len': max_seq_len_video,
-#                         'audio_seq_len': max_seq_len_audio,
-#                         'first_frame_is_clean': False,
-#                     }
-#                     pred_video_guided, pred_audio_guided = fusion_model(
-#                         vid=[video_noise],
-#                         audio=[audio_noise],
-#                         t=timestep_input,
-#                         **pos_forward_args
-#                     )
-#                     pred_video_guided = [i.to(infer_dtype) for i in pred_video_guided]
-#                     pred_audio_guided = [i.to(infer_dtype) for i in pred_audio_guided]
-                            
-
-#                     # Forward pass with negative prompts for classifier-free guidance
-#                     if do_classifier_free_guidance:
-#                         neg_forward_args = {
-#                             'audio_context': [text_embeddings_audio_neg],
-#                             'vid_context': [text_embeddings_video_neg],
-#                             'vid_seq_len': max_seq_len_video,
-#                             'audio_seq_len': max_seq_len_audio,
-#                             'first_frame_is_clean': False,
-#                             'slg_layer': slg_layer
-#                         }  
-#                         pred_vid_neg, pred_audio_neg = fusion_model(
-#                             vid=[video_noise],
-#                             audio=[audio_noise],
-#                             t=timestep_input,
-#                             **neg_forward_args
-#                         )
-#                         pred_vid_neg   = [i.to(infer_dtype) for i in pred_vid_neg]
-#                         pred_audio_neg = [i.to(infer_dtype) for i in pred_audio_neg]
-
-#                         pred_video_guided = pred_vid_neg[0] + v_guidance_scale * (pred_video_guided[0] - pred_vid_neg[0])
-#                         pred_audio_guided = pred_audio_neg[0] + a_guidance_scale * (pred_audio_guided[0] - pred_audio_neg[0])
-
-
-#                     # Update latents using schedulers
-#                     video_noise = scheduler_video.step(pred_video_guided.unsqueeze(0), t_v, video_noise.unsqueeze(0), return_dict=False)[0].squeeze(0)
-#                     audio_noise = scheduler_audio.step(pred_audio_guided.unsqueeze(0), t_a, audio_noise.unsqueeze(0), return_dict=False)[0].squeeze(0)
-
-#             # Decode audio
-#             audio_latents_for_vae = audio_noise.unsqueeze(0).transpose(1, 2)  # 1, c, l
-#             generated_audio = vae_model_audio.wrapped_decode(audio_latents_for_vae)
-#             generated_audio = generated_audio.squeeze().cpu().float().numpy()
-                            
-#             # Decode video
-#             video_latents_for_vae = video_noise.unsqueeze(0)  # 1, c, f, h, w
-#             generated_video = vae_model_video.wrapped_decode(video_latents_for_vae)
-#             generated_video = generated_video.squeeze(0).cpu().float().numpy()  # c, f, h, w
-
-#             # Save results
-#             v_path = f"{output_dir}/{path.split('/')[-1][:-4]}.mp4"                
-#             save_video(v_path, generated_video, generated_audio, fps=config.data_info.video_info.fps, sample_rate=config.data_info.audio_info.sr)
-            
-#         # Clear cache after validation
-#         torch.cuda.empty_cache()
-#         gc.collect()
-#         free_memory()
-#     fusion_model.train()
-
-
-
 
 
 def log_validation(
     config,
+    video_config,
+    audio_config,
     fusion_model,
     vae_model_video,
     vae_model_audio,
@@ -265,8 +113,8 @@ def log_validation(
             video_h, video_w = snap_hw_to_multiple_of_32(video_h, video_w, area=snap_area)
             video_latent_h, video_latent_w = video_h // 16, video_w // 16
                     
-            audio_latent_channel = fusion_model.module.audio_config['in_dim'] if hasattr(fusion_model, "module") else fusion_model.audio_config['in_dim']
-            video_latent_channel = fusion_model.module.video_config['in_dim'] if hasattr(fusion_model, "module") else fusion_model.video_config['in_dim']
+            audio_latent_channel = audio_config['in_dim'] 
+            video_latent_channel = video_config['in_dim'] 
             audio_latent_length = 157  # Fixed for Ovi model
             video_latent_length = 31   # Fixed for Ovi model
 
@@ -385,11 +233,19 @@ def training_step(batch,
                   accelerator, 
                   load_dtype):
 
+    # TODO: Check DPO Loss and dataset W-L data pair order
     text_prompt = batch['v_prompt']  # Use video prompt as main prompt
     text_prompt = [f"{batch['v_prompt'][i]} <AUDCAP>{batch['a_prompt'][i]}<ENDAUDCAP>" for i in range(len(batch['v_prompt']))] # Use video caption as the main prompt
     waveform = batch['audio_waveform'][:,0,:]
     video_pixel = batch['video_pixel']
+    # waveform_lose = batch['audio_waveform_lose'][:,0,:]
+    # video_pixel_lose = batch['video_pixel_lose']
+    # waveform = torch.concat([waveform, waveform_lose], dim = 0)
+    # video_pixel = torch.concat([video_pixel, video_pixel_lose], dim = 0)
+    # group_size = len(text_prompt)
+    # batch_size = group_size * 2
     batch_size = len(text_prompt)
+
 
 
     with torch.no_grad():
@@ -398,19 +254,16 @@ def training_step(batch,
         text_embeddings = [emb.to(load_dtype).to(accelerator.device) for emb in text_embeddings]
 
         # Encode video and audio to latents
-        v_latents = vae_model_video.wrapped_encode(video_pixel.to(load_dtype))
-        a_latents = vae_model_audio.wrapped_encode(waveform.to(torch.float32)).transpose(1, 2)
+        v_latents = vae_model_video.wrapped_encode(video_pixel.to(load_dtype)).to(load_dtype)
+        a_latents = vae_model_audio.wrapped_encode(waveform.to(torch.float32)).transpose(1, 2).to(load_dtype)
 
-        # # Check Latent
-        # # Decode audio
+        # # # Check Latent
         # audio_latents_for_vae = a_latents.transpose(1, 2)  # 1, c, l
         # generated_audio = vae_model_audio.wrapped_decode(audio_latents_for_vae)
-        # generated_audio = generated_audio.cpu().float().numpy()          
-        # # Decode video
+        # generated_audio = generated_audio.cpu().float().numpy()         
         # video_latents_for_vae = v_latents    # 1, c, f, h, w
         # generated_video = vae_model_video.wrapped_decode(video_latents_for_vae)
         # generated_video = generated_video.cpu().float().numpy()  # c, f, h, w
-        # # Save results
         # for i in range(batch_size):
         #     v_path = f"test{i}.mp4"                
         #     save_video(v_path, generated_video[i], generated_audio[i][0], fps=24, sample_rate=16000)
@@ -438,7 +291,26 @@ def training_step(batch,
         _patch_size_h, _patch_size_w = patch_size[1], patch_size[2]
         max_seq_len_video = v_latent_model_input.shape[-1] * v_latent_model_input.shape[-2] * v_latent_model_input.shape[-3] // (_patch_size_h * _patch_size_w)
 
+
+        # # Forward pass through ref fusion model
+        # fusion_model.module.set_adapter("ref") if hasattr(fusion_model, "module") else fusion_model.set_adapter("ref")
+        # pred_vid_ref, pred_audio_ref = fusion_model(
+        #     vid=[v_latent_model_input[i] for i in range(batch_size)],
+        #     audio=[a_latent_model_input[i] for i in range(batch_size)],
+        #     t=timesteps,
+        #     vid_context=text_embeddings,
+        #     audio_context=text_embeddings,
+        #     vid_seq_len=max_seq_len_video,
+        #     audio_seq_len=max_seq_len_audio,
+        #     first_frame_is_clean=False
+        # )
+        # pred_vid_ref = torch.stack(pred_vid_ref, dim = 0).detach()
+        # pred_audio_ref = torch.stack(pred_audio_ref, dim = 0).detach()
+
+
+
     # Forward pass through fusion model
+    fusion_model.module.set_adapter("learner") if hasattr(fusion_model, "module") else fusion_model.set_adapter("learner")
     pred_vid, pred_audio = fusion_model(
         vid=[v_latent_model_input[i] for i in range(batch_size)],
         audio=[a_latent_model_input[i] for i in range(batch_size)],
@@ -452,15 +324,57 @@ def training_step(batch,
     pred_vid = torch.stack(pred_vid, dim = 0)
     pred_audio = torch.stack(pred_audio, dim = 0)
 
-    # Calculate losses
+    # v_model_losses = (pred_vid.float() - v_target.float()).pow(2).mean(dim=[1, 2, 3, 4])
+    # v_model_losses_w, v_model_losses_l = v_model_losses.chunk(2)
+    # v_model_diff = v_model_losses_w - v_model_losses_l
+
+    # a_model_losses = (pred_audio.float() - a_target.float()).pow(2).mean(dim=[1, 2])
+    # a_model_losses_w, a_model_losses_l = a_model_losses.chunk(2)    
+    # a_model_diff = a_model_losses_w - a_model_losses_l
+    
+
+    # with torch.no_grad():
+    #     v_ref_losses = (pred_vid_ref.float() - v_target.float()).pow(2).mean(dim=[1, 2, 3, 4])
+    #     v_ref_losses_w, v_ref_losses_l = v_ref_losses.chunk(2)
+    #     v_ref_diff = v_ref_losses_w - v_ref_losses_l
+
+    #     a_ref_losses = (pred_audio_ref.float() - a_target.float()).pow(2).mean(dim=[1, 2])
+    #     a_ref_losses_w, a_ref_losses_l = a_ref_losses.chunk(2)
+    #     a_ref_diff = a_ref_losses_w - a_ref_losses_l
+
+
+    # scale_term = -0.5 * dpo_beta
+
+    # v_inside_term = scale_term * (v_model_diff - v_ref_diff)
+    # v_dpo_loss = -F.logsigmoid(v_inside_term).mean()
+
+    # a_inside_term = scale_term * (a_model_diff - a_ref_diff)
+    # a_dpo_loss = -F.logsigmoid(a_inside_term).mean()
+
+    # info = {
+    #     'v_model_diff':v_model_diff.mean().detach().item(),
+    #     'v_model_losses_w':v_model_losses_w.mean().detach().item(),
+    #     'v_model_losses_l':v_model_losses_l.mean().detach().item(),
+    #     'a_model_diff':a_model_diff.mean().detach().item(),
+    #     'a_model_losses_w':a_model_losses_w.mean().detach().item(),
+    #     'a_model_losses_l':a_model_losses_l.mean().detach().item(),
+    #     'v_ref_diff':v_ref_diff.mean().detach().item(),
+    #     'v_ref_losses_w':v_ref_losses_w.mean().detach().item(),
+    #     'v_ref_losses_l':v_ref_losses_l.mean().detach().item(),
+    #     'a_ref_diff':a_ref_diff.mean().detach().item(),
+    #     'a_ref_losses_w':a_ref_losses_w.mean().detach().item(),
+    #     'a_ref_losses_l':a_ref_losses_l.mean().detach().item(),
+    # }
+    # Calculate SFT MSE losses
     loss_v = nn_func.mse_loss(pred_vid.float(), v_target.float(), reduction="mean")
     loss_a = nn_func.mse_loss(pred_audio.float(), a_target.float(), reduction="mean")
-    
+
+
     return loss_v, loss_a
 
 
-# TODO: Check Save model
-def checkpointing_step(accelerator, logger, args, ckpt_idx = 0):
+
+def checkpointing_step(model, accelerator, logger, args, ckpt_idx = 0):
     ckpt_dir = os.path.join(accelerator.project_dir, 'checkpoints')
     os.makedirs(ckpt_dir, exist_ok=True)
     
@@ -479,8 +393,11 @@ def checkpointing_step(accelerator, logger, args, ckpt_idx = 0):
             for removing_checkpoint in removing_checkpoints:
                 removing_checkpoint = os.path.join(ckpt_dir, removing_checkpoint)
                 shutil.rmtree(removing_checkpoint)
-
+    # Save whole model lora
     accelerator.save_state()
+    # Save lora
+    lora_save_path = f"{ckpt_dir}/checkpoint_{ckpt_idx}"
+    model.module.save_pretrained(lora_save_path) if hasattr(model, "module") else model.save_pretrained(lora_save_path)
     logger.info(f"Saved state to {ckpt_dir}")
 
 
@@ -493,12 +410,14 @@ def main(args, accelerator):
 
     # Initialize Ovi fusion model
     fusion_model, video_config, audio_config = init_fusion_score_model_ovi(rank=accelerator.device, meta_init=True)
-    fusion_model.video_config = video_config
-    fusion_model.audio_config = audio_config
+    # fusion_model.video_config = video_config
+    # fusion_model.audio_config = audio_config
     if args.fusion_checkpoint_path is not None:
         load_fusion_checkpoint(fusion_model, checkpoint_path=args.fusion_checkpoint_path, from_meta=True)
-    fusion_model = fusion_model.requires_grad_(False).to(dtype=load_dtype).to(device=accelerator.device)
+    fusion_model = fusion_model.requires_grad_(False).to(dtype=load_dtype).to(device=accelerator.device).eval()
     fusion_model.set_rope_params()
+    
+
 
     # Initialize VAE models
     vae_model_video = init_wan_vae_2_2(args.ckpt_dir, rank=accelerator.device)
@@ -507,7 +426,6 @@ def main(args, accelerator):
     vae_model_audio = init_mmaudio_vae(args.ckpt_dir, rank=accelerator.device)
     vae_model_audio.requires_grad_(False).eval().to(load_dtype)
     
-
     # Initialize text model
     text_model = init_text_model(args.ckpt_dir, rank=accelerator.device, cpu_offload=False)
 
@@ -537,8 +455,8 @@ def main(args, accelerator):
     if torch.backends.mps.is_available() and weight_dtype == torch.bfloat16:
         raise ValueError("Mixed precision training with bfloat16 is not supported on MPS. Please use fp16 (recommended) or fp32 instead.")
     
-    if args.mixed_precision == "fp16":
-        cast_training_params([fusion_model], dtype=torch.float32)
+    # if args.mixed_precision == "fp16":
+    #     cast_training_params([fusion_model], dtype=torch.float32)
 
     """ ****************************  Data setting.  **************************** """
     logger.info("=> Preparing training data...", main_process_only=True)
@@ -553,12 +471,25 @@ def main(args, accelerator):
         lora_config = LoraConfig(
             r=args.lora_config.rank,
             lora_alpha=args.lora_config.lora_alpha,
-            target_modules=args.lora_config.lora_modules,
+            target_modules=list(args.lora_config.lora_modules),
             lora_dropout=0.1,
             bias="none",)
-        fusion_model.video_model = get_peft_model(fusion_model.video_model, lora_config)
-        fusion_model.audio_model = get_peft_model(fusion_model.audio_model, lora_config)
-    
+
+        # TODO: Check load lora
+        if hasattr(args.lora_config, 'lora_load_path') and args.lora_config.lora_load_path:
+            print(f"Loading LoRA weights from {args.lora_config.lora_load_path}")
+            fusion_model = PeftModel.from_pretrained(
+                fusion_model, 
+                args.lora_config.lora_load_path,
+                adapter_name="learner"
+            )
+        else:
+            fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="learner")
+
+        fusion_model.set_adapter("learner")
+        fusion_model.print_trainable_parameters()
+
+
     if args.block_config.train_va == True:
         for block_idx in args.block_config.audio_trainable_blocks:
             fusion_model.audio_model.blocks[block_idx].requires_grad_(True)
@@ -613,7 +544,6 @@ def main(args, accelerator):
     fusion_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare( 
         fusion_model, optimizer, train_dataloader, lr_scheduler 
     )
-
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -692,9 +622,11 @@ def main(args, accelerator):
         fusion_model.train()
         for step, batch in enumerate(train_dataloader):
             
-            if global_step % args.validation.eval_steps == 0:
+            if global_step % args.validation.eval_steps == 0 and global_step != 0:
                 log_validation(
                     config=args.validation,
+                    video_config=video_config,
+                    audio_config=audio_config,
                     fusion_model=fusion_model,
                     vae_model_video=vae_model_video,
                     vae_model_audio=vae_model_audio,
@@ -705,10 +637,12 @@ def main(args, accelerator):
                 )
 
             # TRAIN
+            # TODO: Add ref model update
             models_to_accumulate = [fusion_model]
             with accelerator.accumulate(models_to_accumulate):
                 loss_v, loss_a = training_step(batch, 
                                     fusion_model=fusion_model,
+                                    # fusion_model_ref=fusion_model_ref,
                                     vae_model_video=vae_model_video,
                                     vae_model_audio=vae_model_audio,
                                     text_model=text_model,
@@ -728,11 +662,16 @@ def main(args, accelerator):
                 progress_bar.update(1)
                 global_step += 1
                 if global_step % args.checkpointing_steps == 0:
-                    checkpointing_step(accelerator, logger, args)
+                    checkpointing_step(model = fusion_model,
+                                       accelerator = accelerator, 
+                                       logger = logger, 
+                                       args = args, 
+                                       ckpt_idx = int(global_step // args.checkpointing_steps - 1))
 
-            logs = {"loss": loss_v.detach().item() + loss_a.detach().item(),
-                    "loss_v": loss_v.detach().item(), "loss_a": loss_a.detach().item(), 
-                    "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"loss":             loss_v.detach().item() + loss_a.detach().item(),
+                    "loss_v":           loss_v.detach().item(), 
+                    "loss_a":           loss_a.detach().item(), 
+                    "lr":               lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
             if global_step >= args.max_train_steps:
@@ -740,7 +679,11 @@ def main(args, accelerator):
 
     # Save the lora layers
     logger.info("=> Saving the trained model ...")
-    checkpointing_step(accelerator, logger, args)
+    checkpointing_step(model = fusion_model,
+                        accelerator = accelerator, 
+                        logger = logger, 
+                        args = args, 
+                        ckpt_idx = int(global_step // args.checkpointing_steps - 1))
 
     accelerator.wait_for_everyone()
     accelerator.end_training()

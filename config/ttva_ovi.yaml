@@ -1,4 +1,4 @@
-tag: "ovi_fusion_debug"     
+tag: "ovi_fusion_train"     
 
 # For hf setting
 push_to_hub   : false
@@ -6,14 +6,14 @@ hub_token     : null
 hub_model_id  : null
 # For logging setting
 tracker_name  : null
-output_dir  : ./log/ovi_fusion_debug
+output_dir  : ./log/ovi_fusion_fft
 report_to   : wandb   
 ckpt_subdir : checkpoints
 logging_subdir: logging
 wandb_init_args:
-  mode      : "offline" # online / offline  
+  mode      : "online" # online / offline  
   project   : "Ovi"
-  name      : "ovi_fusion_debug"
+  name      : "ovi_fusion_fft"
   tags      : null
   notes     : ""
 
@@ -31,16 +31,17 @@ bridge_safetensors_path: null  # Not used for Ovi
 
 # Ovi model trainable setting
 lora_config:
-  use_lora: false
+  lora_load_path: null
+  use_lora: true
   rank: 128  
   lora_alpha: 64
-  lora_modules: ["to_q", "to_k", "to_v", "to_out", "ffn.net.0.proj", "ffn.net.2", "text_embedder.linear"]
+  lora_modules: ['k_fusion', 'v_fusion']
 block_config:
   train_va: false   
   audio_trainable_blocks: [19, 20, 21, 22, 23]  # 24 blocks in total
   video_trainable_blocks: [25, 26, 27, 28, 29]  # 30 blocks in total
 # Ovi fusion model trainable parameters - adjust based on your training strategy
-optimize_params : ["fusion"] 
+optimize_params : null # ["fusion"] 
 
 
 # Training parameters
@@ -51,15 +52,15 @@ mixed_precision : bf16   # Options: ["null", "fp16", "bf16"]
 allow_tf32      : false 
 # matmul_precision  : medium 
 # Steps and saving
-num_train_epochs        : 400        
+num_train_epochs        : 10  #######################
 max_train_steps         : null
-checkpointing_steps     : 1000 #######################  
+checkpointing_steps     : 100 #######################  
 checkpoints_total_limit : 40 
 # For batch and LR setting
 num_workers             : 4
-train_batch_size_local  : 2
+train_batch_size_local  : 1
 gradient_accumulation_steps : 1
-learning_rate   : 5e-5     #######################
+learning_rate   : 1e-5     #######################
 scale_lr        : false     
 lr_scheduler    : "cosine_with_restarts"  # Options: ["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"]
 lr_warmup_steps : 1000
@@ -94,18 +95,18 @@ prodigy_safeguard_warmup    : false
 
 
 hy_dataloader:
-  video_index_file: "/home/chengxin/chengxin/vagen/data/ttva/avsync_test.json"  
+  video_index_file: "/home/chengxin/chengxin/vagen/data/ttva/avsync_train.json"  
   batch_size : ${train_batch_size_local}  
   # dataset setting
-  load_mode: "video_audio"
+  load_mode: "video_audio" # video_audio_dpo  video_audio
   video_size: [992, 512]
   fps : 24                  
   max_frames: 121            
   target_sr: 16000            
   target_channels: 1          
-  target_duration: 5.1      ##
-  uncond_prob: 0.5          
-  # # # # negetive_prompt: ""    ##   
+  target_duration: 5.0      
+  uncond_prob: 0.0          #######################
+  # # # # negetive_prompt: ""       
   # DataLoader parameters
   shuffle: true               
   num_workers: ${num_workers}
@@ -127,16 +128,13 @@ validation:
   seed: ${seed}
   slg_layer: 11
   num_inference_steps: 40   
-
-                      ## 
+                       
   v_negative_prompt : "jitter, bad hands, blur, distortion"
-  v_num_frames: ${hy_dataloader.max_frames}
   video_size: ${hy_dataloader.video_size}
-  v_guidance_scale: 4  ##    
+  v_guidance_scale: 4      
 
   a_negative_prompt : "robotic, muffled, echo, distorted"
-  a_duration: ${hy_dataloader.target_duration}  
-  a_guidance_scale: 3  ##
+  a_guidance_scale: 3
 
   data_info:
     video_info:

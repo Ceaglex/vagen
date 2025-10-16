@@ -345,22 +345,32 @@ def training_step(batch,
     scale_term = -0.5 * dpo_beta
 
     v_inside_term = scale_term * (v_model_diff - v_ref_diff)
-    # v_implicit_acc = (v_inside_term > 0).sum().float() / v_inside_term.size(0)
     v_dpo_loss = -F.logsigmoid(v_inside_term).mean()
 
     a_inside_term = scale_term * (a_model_diff - a_ref_diff)
-    # a_implicit_acc = (a_inside_term > 0).sum().float() / a_inside_term.size(0)
     a_dpo_loss = -F.logsigmoid(a_inside_term).mean()
 
-
-
-
+    info = {
+        'v_model_diff':v_model_diff.mean().detach().item(),
+        'v_model_losses_w':v_model_losses_w.mean().detach().item(),
+        'v_model_losses_l':v_model_losses_l.mean().detach().item(),
+        'a_model_diff':a_model_diff.mean().detach().item(),
+        'a_model_losses_w':a_model_losses_w.mean().detach().item(),
+        'a_model_losses_l':a_model_losses_l.mean().detach().item(),
+        'v_ref_diff':v_ref_diff.mean().detach().item(),
+        'v_ref_losses_w':v_ref_losses_w.mean().detach().item(),
+        'v_ref_losses_l':v_ref_losses_l.mean().detach().item(),
+        'a_ref_diff':a_ref_diff.mean().detach().item(),
+        'a_ref_losses_w':a_ref_losses_w.mean().detach().item(),
+        'a_ref_losses_l':a_ref_losses_l.mean().detach().item(),
+    }
+    
     # # Calculate SFT MSE losses
     # loss_v = nn_func.mse_loss(pred_vid.float(), v_target.float(), reduction="mean")
     # loss_a = nn_func.mse_loss(pred_audio.float(), a_target.float(), reduction="mean")
 
 
-    return v_dpo_loss, a_dpo_loss
+    return v_dpo_loss, a_dpo_loss, info
 
 
 
@@ -466,6 +476,7 @@ def main(args, accelerator):
             bias="none",)
 
         # TODO: Check load lora
+        # TODO: Set ref model eval() or update ref model on times
         if hasattr(args.lora_config, 'lora_load_path') and args.lora_config.lora_load_path:
             print(f"Loading LoRA weights from {args.lora_config.lora_load_path}")
             fusion_model = PeftModel.from_pretrained(
@@ -616,7 +627,7 @@ def main(args, accelerator):
         fusion_model.train()
         for step, batch in enumerate(train_dataloader):
             
-            if global_step % args.validation.eval_steps == 0:
+            if global_step % args.validation.eval_steps == 0 and global_step != 0:
                 log_validation(
                     config=args.validation,
                     video_config=video_config,
@@ -634,7 +645,7 @@ def main(args, accelerator):
             # TODO: Add ref model update
             models_to_accumulate = [fusion_model]
             with accelerator.accumulate(models_to_accumulate):
-                loss_v, loss_a = training_step(batch, 
+                loss_v, loss_a, info = training_step(batch, 
                                     fusion_model=fusion_model,
                                     # fusion_model_ref=fusion_model_ref,
                                     vae_model_video=vae_model_video,
@@ -663,9 +674,22 @@ def main(args, accelerator):
                                        args = args, 
                                        ckpt_idx = int(global_step // args.checkpointing_steps - 1))
 
-            logs = {"loss": loss_v.detach().item() + loss_a.detach().item(),
-                    "loss_v": loss_v.detach().item(), "loss_a": loss_a.detach().item(), 
-                    "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"loss":             loss_v.detach().item() + loss_a.detach().item(),
+                    "loss_v":           loss_v.detach().item(), 
+                    "loss_a":           loss_a.detach().item(), 
+                    'v_model_diff':     info['v_model_diff'],
+                    'v_model_losses_w': info['v_model_losses_w'],
+                    'v_model_losses_l': info['v_model_losses_l'],
+                    'a_model_diff':     info['a_model_diff'],
+                    'a_model_losses_w': info['a_model_losses_w'],
+                    'a_model_losses_l': info['a_model_losses_l'],
+                    'v_ref_diff':       info['v_ref_diff'],
+                    'v_ref_losses_w':   info['v_ref_losses_w'],
+                    'v_ref_losses_l':   info['v_ref_losses_l'],
+                    'a_ref_diff':       info['a_ref_diff'],
+                    'a_ref_losses_w':   info['a_ref_losses_w'],
+                    'a_ref_losses_l':   info['a_ref_losses_l'],
+                    "lr":               lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
             if global_step >= args.max_train_steps:
@@ -673,7 +697,11 @@ def main(args, accelerator):
 
     # Save the lora layers
     logger.info("=> Saving the trained model ...")
-    checkpointing_step(accelerator, logger, args)
+    checkpointing_step(model = fusion_model,
+                        accelerator = accelerator, 
+                        logger = logger, 
+                        args = args, 
+                        ckpt_idx = int(global_step // args.checkpointing_steps - 1))
 
     accelerator.wait_for_everyone()
     accelerator.end_training()

@@ -17,8 +17,6 @@ wandb_init_args:
   tags      : null
   notes     : ""
 
-
-
 # Model setting 
 # From hf models and modification
 audio_pretrained_model_name_or_path: ./assets/stable-audio-open-1.0 

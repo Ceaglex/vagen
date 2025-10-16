@@ -300,18 +300,27 @@ class VideoAudioDataset(Dataset):
         current_samples = waveform.shape[1]
         target_samples = int(self.target_duration * raw_sr)
         max_start = current_samples - target_samples
-        start_duration1 = random.randint(0, max_start-1) / raw_sr
-        start_duration2 = random.randint(0, max_start-1) / raw_sr
+        # start_duration1 = random.randint(0, max_start-1) / raw_sr
+        # start_duration2 = random.randint(0, max_start-1) / raw_sr
+        start_duration1, start_duration2 = self.sample_two_starts_discrete(max_start, raw_sr, min_gap_seconds = 1)
 
-        waveform1, start_duration1 = self.read_audio(video_path, start_duration1)
-        waveform2, start_duration2 = self.read_audio(video_path, start_duration2)
-        video_pixel1, start_duration1 = self.read_video(video_path, start_duration = start_duration1)  # [T, C, H, W]
-        video_pixel2 = copy.deepcopy(video_pixel1)
+        if random.uniform(0,1) < 0.5:
+            waveform1, start_duration1 = self.read_audio(video_path, start_duration1)
+            waveform2, start_duration2 = self.read_audio(video_path, start_duration2)
+            video_pixel1, start_duration1 = self.read_video(video_path, start_duration = start_duration1)  # [T, C, H, W]
+            video_pixel2 = copy.deepcopy(video_pixel1)
+        else:
+            video_pixel1, start_duration1 = self.read_video(video_path, start_duration = start_duration1)  # [T, C, H, W]
+            video_pixel2, start_duration2 = self.read_video(video_path, start_duration = start_duration2)  # [T, C, H, W]
+            waveform1, start_duration1 = self.read_audio(video_path, start_duration1)
+            waveform2 = copy.deepcopy(waveform1)
+
 
         if random.uniform(0,1) < self.uncond_prob:
             v_prompt = ""
         if random.uniform(0,1) < self.uncond_prob:
             a_prompt = ""
+
 
         return {
             "video_path": video_path,
@@ -324,6 +333,22 @@ class VideoAudioDataset(Dataset):
             "v_prompt": v_prompt,
             "a_prompt": a_prompt,
         }
+
+
+
+    def sample_two_starts_discrete(self, max_start, raw_sr, min_gap_seconds=1.0):
+        min_interval_samples = raw_sr * min_gap_seconds
+        if max_start <= min_interval_samples:
+            pos1 = random.randint(0, max_start-1) 
+            pos2 = random.randint(0, max_start-1) 
+        else:
+            pos1 = random.randint(0, max_start - min_interval_samples - 1)
+            pos2 = random.randint(pos1 + min_interval_samples, max_start - 1)
+
+        start_duration1 = pos1 / raw_sr
+        start_duration2 = pos2 / raw_sr
+        return start_duration1, start_duration2
+
 
 
 def build_video_loader(args):
