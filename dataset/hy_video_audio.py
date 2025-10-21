@@ -47,7 +47,7 @@ class VideoAudioDataset(Dataset):
 
 
     def read_audio(self, audio_path, start_duration = None):
-        waveform, sr = torchaudio.load(audio_path)
+        waveform, sr = torchaudio.load(audio_path, backend='ffmpeg')
         num_channels = waveform.shape[0]
         if num_channels != self.target_channels:
             if self.target_channels == 1 and num_channels > 1:
@@ -296,7 +296,7 @@ class VideoAudioDataset(Dataset):
         v_prompt = info['video_caption']
         a_prompt = info['audio_caption']
 
-        waveform, raw_sr = torchaudio.load(video_path)
+        waveform, raw_sr = torchaudio.load(video_path, backend='ffmpeg')
         current_samples = waveform.shape[1]
         target_samples = int(self.target_duration * raw_sr)
         max_start = current_samples - target_samples

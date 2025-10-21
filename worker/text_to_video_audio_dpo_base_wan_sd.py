@@ -221,20 +221,21 @@ def log_validation(
                     export_to_video(gen_video[i], v_path, fps=config.data_info.video_info.fps)
                     torchaudio.save(a_path, gen_audio[i].cpu().to(torch.float32), sample_rate=config.data_info.audio_info.sr)
                     add_audio_to_video(video_path = v_path, audio_path = a_path, output_path = o_path)
-                # accelerator.wait_for_everyone()
+
                 if sync_times != 0: 
                     sync_times -= 1
                     accelerator.wait_for_everyone()
                     print(accelerator.device, sync_times)
 
-                
-            # Clear cache after validation
+                    
             accelerator.wait_for_everyone()
+            # Clear cache after validation
             torch.cuda.empty_cache()
             gc.collect()
             free_memory()
     vajoint_dit.train()
-    
+
+
 
 def training_step(batch, 
                   vajoint_dit,
@@ -247,13 +248,29 @@ def training_step(batch,
                   video_text_encoder,
                   video_tokenizer, 
                   accelerator, 
+                  dpo_beta,
                   load_dtype):
 
-    v_prompt = batch['v_prompt']
-    a_prompt = batch['a_prompt']  
+    # v_prompt = batch['v_prompt']
+    # a_prompt = batch['a_prompt']  
+    # waveform = batch['audio_waveform']
+    # video_pixel = batch['video_pixel']
+    # batch_size = len(v_prompt)
+    # TODO: Check DPO Loss and dataset W-L data pair order
+    v_prompt = batch['v_prompt']  # Use video prompt as main prompt
+    a_prompt = batch['a_prompt']
     waveform = batch['audio_waveform']
     video_pixel = batch['video_pixel']
-    batch_size = len(v_prompt)
+    group_size = len(v_prompt)
+    batch_size = group_size
+
+    v_prompt = [vp_ for vp in v_prompt  for vp_ in [vp, vp] ]
+    a_prompt = [ap_ for ap in a_prompt  for ap_ in [ap, ap] ]
+    waveform_lose = batch['audio_waveform_lose']
+    video_pixel_lose = batch['video_pixel_lose']
+    waveform = torch.concat([waveform, waveform_lose], dim = 0)
+    video_pixel = torch.concat([video_pixel, video_pixel_lose], dim = 0)
+    batch_size = group_size * 2
 
     
     # with autocast(dtype=load_dtype):
@@ -266,26 +283,28 @@ def training_step(batch,
             device = accelerator.device,
             do_classifier_free_guidance = False,
             negative_prompt = None,
-        )
+        ).detach()
         v_prompt_embeds = get_t5_prompt_embeds(
             prompt=v_prompt,
             tokenizer = video_tokenizer,
             text_encoder = video_text_encoder,
             device=accelerator.device,
-        )
+        ).detach()
 
-        # TODO: Faster Video VAE
-        v_latents = video_vae.encode(video_pixel.to(video_vae.dtype)).latent_dist.sample()
+        v_latents = video_vae.encode(video_pixel.to(video_vae.dtype)).latent_dist.sample().detach()
         v_latents_mean = torch.tensor(video_vae.config.latents_mean).view(1, video_vae.config.z_dim, 1, 1, 1).to(v_latents.device, v_latents.dtype)
         v_latents_std = 1.0 / torch.tensor(video_vae.config.latents_std).view(1, video_vae.config.z_dim, 1, 1, 1).to(v_latents.device, v_latents.dtype)
         v_latents = (v_latents - v_latents_mean) * v_latents_std
-        v_noise = torch.randn_like(v_latents)
-        a_latents = audio_vae.encode(waveform.to(audio_vae.dtype)).latent_dist.sample() # [bs, 64, 21.5 * duration]
-        a_noise = torch.randn_like(a_latents)
+        v_noise = torch.randn_like(v_latents[:group_size]).detach()
+        v_noise = torch.concat([v_noise, v_noise], dim = 0)
+
+        a_latents = audio_vae.encode(waveform.to(audio_vae.dtype)).latent_dist.sample().detach() # [bs, 64, 21.5 * duration]
+        a_noise = torch.randn_like(a_latents[:group_size]).detach()
+        a_noise = torch.concat([a_noise, a_noise], dim = 0)
+
         a_rotary_embed_dim = vajoint_dit.module.audio_transformer.config.attention_head_dim // 2 if hasattr(vajoint_dit, "module") else vajoint_dit.audio_transformer.config.attention_head_dim // 2
         a_rotary_embedding = get_1d_rotary_pos_embed(a_rotary_embed_dim, a_latents.shape[2] + 1, use_real=True, repeat_interleave_real=False)
-        # a_rotary_embedding = (a_rotary_embedding[0].to(dtype=load_dtype), a_rotary_embedding[1].to(dtype=load_dtype))
-        # # # # TODO : Check latent
+        # # # #  Check latent
         # # # Decode latents to final outputs
         # # v_latents = v_latents.to(video_vae.dtype)
         # # v_latents_mean = torch.tensor(video_vae.config.latents_mean).view(1, video_vae.config.z_dim, 1, 1, 1).to(v_latents.device, v_latents.dtype)
@@ -298,7 +317,9 @@ def training_step(batch,
         # #     export_to_video(gen_video[i], f"test{i}.mp4", fps=16)
         # #     torchaudio.save(f"test{i}.wav", gen_audio[i].to(torch.float32).cpu(), sample_rate=44100)
 
-        timesteps = torch.randint( 0, 1000, (batch_size,), dtype=torch.int64, device=vajoint_dit.device).detach()
+        timesteps = torch.randint( 0, 1000, (group_size,), dtype=torch.int64, device=vajoint_dit.device).detach()
+        timesteps = torch.concat([timesteps, timesteps], dim = 0)
+        
         a_t = (timesteps / 1000).to(a_latents.dtype).view(-1, *([1] * (a_latents.ndim - 1)))
         v_t = (timesteps / 1000).to(v_latents.dtype).view(-1, *([1] * (v_latents.ndim - 1)))
         a_latent_model_input = (1 - a_t) * a_latents + a_t * a_noise
@@ -306,8 +327,24 @@ def training_step(batch,
         a_target = a_noise - a_latents
         v_target = v_noise - v_latents
 
+        # Forward pass through ref fusion model
+        vajoint_dit.module.set_adapter("ref") if hasattr(vajoint_dit, "module") else vajoint_dit.set_adapter("ref")
+        pred_vid_ref, pred_audio_ref = vajoint_dit(
+            timestep=timesteps,
+            v_latent_model_input=v_latent_model_input,
+            v_encoder_hidden_states=v_prompt_embeds,
+            v_attention_kwargs=None,
+            a_latent_model_input=a_latent_model_input,
+            a_encoder_hidden_states=a_prompt_embeds, 
+            a_rotary_embedding=a_rotary_embedding,
+            return_dict=False
+        )
+        pred_vid_ref = pred_vid_ref[0].detach()
+        pred_audio_ref = pred_audio_ref[0].detach()
 
-    v_noise_pred, a_noise_pred = vajoint_dit(
+
+    vajoint_dit.module.set_adapter("learner") if hasattr(vajoint_dit, "module") else vajoint_dit.set_adapter("learner")
+    pred_vid, pred_audio = vajoint_dit(
         timestep=timesteps,
         v_latent_model_input=v_latent_model_input,
         v_encoder_hidden_states=v_prompt_embeds,
@@ -317,15 +354,58 @@ def training_step(batch,
         a_rotary_embedding=a_rotary_embedding,
         return_dict=False
     )
-    v_noise_pred = v_noise_pred[0]
-    a_noise_pred = a_noise_pred[0]
-
-    loss_v = nn_func.mse_loss(v_noise_pred.float(), v_target.float(), reduction="mean")
-    loss_a = nn_func.mse_loss(a_noise_pred.float(), a_target.float(), reduction="mean")
-    return loss_v, loss_a
+    pred_vid = pred_vid[0]
+    pred_audio = pred_audio[0]
 
 
-def checkpointing_step(accelerator, logger, args, ckpt_idx = 0):
+    v_model_losses = (pred_vid.float() - v_target.float()).pow(2).mean(dim=[1, 2, 3, 4])
+    v_model_losses_w, v_model_losses_l = v_model_losses.chunk(2)
+    v_model_diff = v_model_losses_w - v_model_losses_l
+
+    a_model_losses = (pred_audio.float() - a_target.float()).pow(2).mean(dim=[1, 2])
+    a_model_losses_w, a_model_losses_l = a_model_losses.chunk(2)    
+    a_model_diff = a_model_losses_w - a_model_losses_l
+    
+
+    with torch.no_grad():
+        v_ref_losses = (pred_vid_ref.float() - v_target.float()).pow(2).mean(dim=[1, 2, 3, 4])
+        v_ref_losses_w, v_ref_losses_l = v_ref_losses.chunk(2)
+        v_ref_diff = v_ref_losses_w - v_ref_losses_l
+
+        a_ref_losses = (pred_audio_ref.float() - a_target.float()).pow(2).mean(dim=[1, 2])
+        a_ref_losses_w, a_ref_losses_l = a_ref_losses.chunk(2)
+        a_ref_diff = a_ref_losses_w - a_ref_losses_l
+
+
+    scale_term = -0.5 * dpo_beta
+
+    v_inside_term = scale_term * (v_model_diff - v_ref_diff)
+    v_dpo_loss = -nn_func.logsigmoid(v_inside_term).mean()
+
+    a_inside_term = scale_term * (a_model_diff - a_ref_diff)
+    a_dpo_loss = -nn_func.logsigmoid(a_inside_term).mean()
+
+    info = {
+        'v_model_diff':v_model_diff.mean().detach().item(),
+        'v_model_losses_w':v_model_losses_w.mean().detach().item(),
+        'v_model_losses_l':v_model_losses_l.mean().detach().item(),
+        'a_model_diff':a_model_diff.mean().detach().item(),
+        'a_model_losses_w':a_model_losses_w.mean().detach().item(),
+        'a_model_losses_l':a_model_losses_l.mean().detach().item(),
+        'v_ref_diff':v_ref_diff.mean().detach().item(),
+        'v_ref_losses_w':v_ref_losses_w.mean().detach().item(),
+        'v_ref_losses_l':v_ref_losses_l.mean().detach().item(),
+        'a_ref_diff':a_ref_diff.mean().detach().item(),
+        'a_ref_losses_w':a_ref_losses_w.mean().detach().item(),
+        'a_ref_losses_l':a_ref_losses_l.mean().detach().item(),
+    }
+    
+    return v_dpo_loss, a_dpo_loss, info
+
+
+
+
+def checkpointing_step(model, accelerator, logger, args, ckpt_idx = 0):
     # ckpt_dir = os.path.join(args.output_dir, args.ckpt_subdir)
     ckpt_dir = os.path.join(accelerator.project_dir, 'checkpoints')
     os.makedirs(ckpt_dir, exist_ok=True)
@@ -347,16 +427,18 @@ def checkpointing_step(accelerator, logger, args, ckpt_idx = 0):
                 removing_checkpoint = os.path.join(ckpt_dir, removing_checkpoint)
                 shutil.rmtree(removing_checkpoint)
 
-    # out_path = f"{ckpt_dir}/checkpoints_{ckpt_idx}"
+    # Save whole model lora
     accelerator.save_state()
+    # Save lora
+    lora_save_path = f"{ckpt_dir}/checkpoint_{ckpt_idx}"
+    model.module.save_pretrained(lora_save_path) if hasattr(model, "module") else model.save_pretrained(lora_save_path)
     logger.info(f"Saved state to {ckpt_dir}")
-
 
 def main(args, accelerator):
 
     """ ****************************  Model setting.  **************************** """
     logger.info("=> Preparing models and scheduler...", main_process_only=True)
-    load_dtype = torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32  # TODO: Set Correct Dtype
+    load_dtype = torch.bfloat16 if args.mixed_precision == "bf16" else torch.float32  
     infer_dtype = torch.bfloat16
 
     # JointVADiT
@@ -454,16 +536,23 @@ def main(args, accelerator):
             joint_va = get_peft_model(joint_va, lora_config, adapter_name="learner")
         joint_va.set_adapter("learner")
         joint_va.print_trainable_parameters()
+        
+        # joint_va.audio_transformer.set_adapter("learner")
+        # joint_va.audio_transformer.print_trainable_parameters()
+        # joint_va.video_transformer.set_adapter("learner")
+        # joint_va.video_transformer.print_trainable_parameters()
 
     if args.block_config.train_va == True:
         for block_idx in args.block_config.audio_trainable_blocks:
-            joint_va.audio_transformer.transformer_blocks[block_idx].requires_grad_(True)
+            joint_va.audio_model.blocks[block_idx].requires_grad_(True)
         for block_idx in args.block_config.video_trainable_blocks:
-            joint_va.video_transformer.blocks[block_idx].requires_grad_(True)
+            joint_va.video_model.blocks[block_idx].requires_grad_(True)
+    
     if args.optimize_params is not None:
         for name, param in joint_va.named_parameters():
             if any(opt_param in name for opt_param in args.optimize_params):
                 param.requires_grad = True
+
 
     # Filter parameters based on optimize_params
     transformer_training_parameters = list(filter(lambda p: p.requires_grad, joint_va.parameters()))
@@ -513,11 +602,7 @@ def main(args, accelerator):
     audio_text_encoder = audio_text_encoder.to(accelerator.device)
     video_vae = video_vae.to(accelerator.device)
     video_text_encoder = video_text_encoder.to(accelerator.device)
-    # print("\n==================================================\n")
-    # for name, param in joint_va.named_parameters():
-    #     if not param.requires_grad:
-    #         print(name)
-    # print("\n==================================================\n")
+
 
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -629,7 +714,7 @@ def main(args, accelerator):
             # TRAIN
             models_to_accumulate = [joint_va]
             with accelerator.accumulate(models_to_accumulate):
-                loss_v, loss_a = training_step(batch, 
+                loss_v, loss_a, info = training_step(batch, 
                                     vajoint_dit = joint_va,
                                     audio_vae = audio_vae,
                                     audio_projection_model = audio_projection_model,
@@ -640,6 +725,7 @@ def main(args, accelerator):
                                     video_text_encoder = video_text_encoder,
                                     video_tokenizer = video_tokenizer,
                                     accelerator = accelerator, 
+                                    dpo_beta = args.dpo_beta,
                                     load_dtype = weight_dtype)
                 accelerator.backward(loss_v + loss_a)
                 if accelerator.sync_gradients:
@@ -656,12 +742,28 @@ def main(args, accelerator):
                 progress_bar.update(1)
                 global_step += 1
                 if global_step % args.checkpointing_steps == 0:
-                    checkpointing_step(accelerator, logger, args)
+                    checkpointing_step(model = joint_va,
+                                       accelerator = accelerator, 
+                                       logger = logger, 
+                                       args = args, 
+                                       ckpt_idx = int(global_step // args.checkpointing_steps - 1))
 
-
-            logs = {"loss": loss_v.detach().item() + loss_a.detach().item(),
-                    "loss_v": loss_v.detach().item(), "loss_a": loss_a.detach().item(), 
-                    "lr": lr_scheduler.get_last_lr()[0]}
+            logs = {"loss":             loss_v.detach().item() + loss_a.detach().item(),
+                    "loss_v":           loss_v.detach().item(), 
+                    "loss_a":           loss_a.detach().item(), 
+                    'v_model_diff':     info['v_model_diff'],
+                    'v_model_losses_w': info['v_model_losses_w'],
+                    'v_model_losses_l': info['v_model_losses_l'],
+                    'a_model_diff':     info['a_model_diff'],
+                    'a_model_losses_w': info['a_model_losses_w'],
+                    'a_model_losses_l': info['a_model_losses_l'],
+                    'v_ref_diff':       info['v_ref_diff'],
+                    'v_ref_losses_w':   info['v_ref_losses_w'],
+                    'v_ref_losses_l':   info['v_ref_losses_l'],
+                    'a_ref_diff':       info['a_ref_diff'],
+                    'a_ref_losses_w':   info['a_ref_losses_w'],
+                    'a_ref_losses_l':   info['a_ref_losses_l'],
+                    "lr":               lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
             if global_step >= args.max_train_steps:
@@ -670,7 +772,11 @@ def main(args, accelerator):
 
     # Save the lora layers
     logger.info("=> Saving the trained model ...")
-    checkpointing_step(accelerator, logger, args)
+    checkpointing_step(model = joint_va,
+                        accelerator = accelerator, 
+                        logger = logger, 
+                        args = args, 
+                        ckpt_idx = int(global_step // args.checkpointing_steps - 1))
 
     accelerator.wait_for_everyone()
     accelerator.end_training()

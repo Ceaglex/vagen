@@ -6,27 +6,24 @@ export TOKENIZERS_PARALLELISM=false
 # export https_proxy=http://star-proxy.oa.com:3128
 
 
-GPU_IDS="1,2,3,4,5,6,7"
+GPU_IDS="0,1,2,3,4,5,6,7"
 GPU_NUMS=8
 
 
+
+
 : "
-    For ttv:
+    For ttva:
 "
+
+
 # CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
-#     --main_process_port 29502 \
-#     worker/text_to_video_base_wan.py \
-#     --config config/ttv_wan.yaml 
-
-
-: "
-    For tta:
-"
+#     --main_process_port 29506 \
+#     worker/infer_wan_sd.py \
+#     --config config/infer_wan_sd.yaml 
 
 
 CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
     --main_process_port 29506 \
-    worker/infer.py \
-    --config config/infer.yaml 
-
-
+    worker/infer_ovi.py \
+    --config config/infer_ovi.yaml 

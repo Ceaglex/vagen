@@ -15,7 +15,7 @@ GPU_NUMS=8
 "
 ##### ttv training code may need modified
 # CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
-#     --main_process_port 29502 \
+#     --main_process_port 29512 \
 #     worker/text_to_video_base_wan.py \
 #     --config config/ttv_wan.yaml 
 ##### ttv code may need modified
@@ -27,46 +27,52 @@ GPU_NUMS=8
 
 ##### tta flow final version
 # CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
-#     --main_process_port 29505 \
+#     --main_process_port 29522 \
 #     worker/text_to_audio_base_sd.py \
 #     --config config/tta_sd.yaml 
 # CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
-#     --main_process_port 29506 \
+#     --main_process_port 29532 \
 #     worker/text_to_audio_base_sd.py \
 #     --config config/tta_sd_ft.yaml 
 ##### tta flow final version
 
 # CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
-#     --main_process_port 29502 \
+#     --main_process_port 29542 \
 #     worker/text_to_audio_base_wan.py \
 #     --config config/tta_wan.yaml 
 
 
 
 
-: "
-    For ttva:
-"
-CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
-    --main_process_port 29501 \
-    worker/text_to_video_audio_base_wan_sd.py \
-    --config config/ttva_wan_sd.yaml 
+# : "
+#     For ttva:
+# "
+# CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
+#     --main_process_port 29501 \
+#     worker/text_to_video_audio_base_wan_sd.py \
+#     --config config/ttva_wan_sd.yaml 
 
 
 # CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
-#     --main_process_port 29501 \
+#     --main_process_port 29502 \
 #     worker/text_to_video_audio_base_ovi.py \
 #     --config config/ttva_ovi.yaml 
 
 
 
-# : "
-#     For ttva dpo:
-# "
-
+: "
+    For ttva dpo:
+"
 
 # CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
-#     --main_process_port 29501 \
-#     worker/text_to_video_audio_dpo_base_ovi.py \
-#     --config config/ttva_dpo_ovi.yaml 
+#     --main_process_port 29504 \
+#     worker/text_to_video_audio_dpo_base_wan_sd.py \
+#     --config config/ttva_dpo_wan_sd.yaml 
+
+
+
+CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
+    --main_process_port 29503 \
+    worker/text_to_video_audio_dpo_base_ovi.py \
+    --config config/ttva_dpo_ovi.yaml 
 

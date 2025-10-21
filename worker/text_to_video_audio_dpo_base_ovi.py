@@ -70,6 +70,7 @@ def log_validation(
         data = list(data.items())
     idx = accelerator.process_index if accelerator.process_index < len(data) else 0
     step_range = accelerator.num_processes if accelerator.num_processes <= len(data) else len(data)
+    sync_times = len(data) // step_range
     data = data[idx::step_range]
     output_dir = os.path.join(accelerator.project_dir, args.logging_subdir, str(global_step))
     os.makedirs(output_dir, exist_ok=True)
@@ -212,9 +213,17 @@ def log_validation(
 
             # Save results
             for i in range(batch_size):
-                v_path = f"{output_dir}/{paths[i].split('/')[-1][:-4]}.mp4"                
+                name = paths[i].split('/')[-1].replace('.mp4', '')
+                v_path = f"{output_dir}/{name}.mp4"                            
                 save_video(v_path, generated_video[i], generated_audio[i][0], fps=config.data_info.video_info.fps, sample_rate=config.data_info.audio_info.sr)
-            
+
+            if sync_times != 0: 
+                sync_times -= 1
+                accelerator.wait_for_everyone()
+                print(accelerator.device, sync_times)
+
+                
+        accelerator.wait_for_everyone()
         # Clear cache after validation
         torch.cuda.empty_cache()
         gc.collect()
@@ -267,12 +276,19 @@ def training_step(batch,
         #     v_path = f"test{i}.mp4"                
         #     save_video(v_path, generated_video[i], generated_audio[i][0], fps=24, sample_rate=16000)
             
-        # Add noise
-        v_noise = torch.randn_like(v_latents).detach()
-        a_noise = torch.randn_like(a_latents).detach()
+        # # Add noise
+        # v_noise = torch.randn_like(v_latents).detach()
+        # a_noise = torch.randn_like(a_latents).detach()
+        v_noise = torch.randn_like(v_latents[:group_size]).detach()
+        v_noise = torch.concat([v_noise, v_noise], dim = 0)
+        a_noise = torch.randn_like(a_latents[:group_size]).detach()
+        a_noise = torch.concat([a_noise, a_noise], dim = 0)
         
-        # Sample timesteps
-        timesteps = torch.randint(0, 1000, (batch_size,), dtype=torch.int64, device=accelerator.device).detach()
+        # # Sample timesteps
+        # timesteps = torch.randint(0, 1000, (batch_size,), dtype=torch.int64, device=accelerator.device).detach()
+        timesteps = torch.randint(0, 1000, (group_size,), dtype=torch.int64, device=accelerator.device).detach()
+        timesteps = torch.concat([timesteps, timesteps], dim = 0)
+
         # Apply flow matching noise schedule
         t_v = (timesteps / 1000).to(v_latents.dtype).view(-1, *([1] * (v_latents.ndim - 1)))
         t_a = (timesteps / 1000).to(a_latents.dtype).view(-1, *([1] * (a_latents.ndim - 1)))
@@ -368,9 +384,10 @@ def training_step(batch,
     # # Calculate SFT MSE losses
     # loss_v = nn_func.mse_loss(pred_vid.float(), v_target.float(), reduction="mean")
     # loss_a = nn_func.mse_loss(pred_audio.float(), a_target.float(), reduction="mean")
+    v_sft_loss = v_model_losses_w
+    a_sft_loss = a_model_losses_w
 
-
-    return v_dpo_loss, a_dpo_loss, info
+    return v_dpo_loss, a_dpo_loss, v_sft_loss, a_sft_loss, info
 
 
 
@@ -397,7 +414,7 @@ def checkpointing_step(model, accelerator, logger, args, ckpt_idx = 0):
     accelerator.save_state()
     # Save lora
     lora_save_path = f"{ckpt_dir}/checkpoint_{ckpt_idx}"
-    model.module.save_pretrained(lora_save_path) if hasattr(model, "module") else model.save_pretrained(lora_save_path)
+    model.module.base_model.save_pretrained(lora_save_path) if hasattr(model, "module") else model.base_model.save_pretrained(lora_save_path)
     logger.info(f"Saved state to {ckpt_dir}")
 
 
@@ -475,7 +492,6 @@ def main(args, accelerator):
             lora_dropout=0.1,
             bias="none",)
 
-        # TODO: Check load lora
         # TODO: Set ref model eval() or update ref model on times
         if hasattr(args.lora_config, 'lora_load_path') and args.lora_config.lora_load_path:
             print(f"Loading LoRA weights from {args.lora_config.lora_load_path}")
@@ -626,8 +642,8 @@ def main(args, accelerator):
     for epoch in range(first_epoch, args.num_train_epochs):
         fusion_model.train()
         for step, batch in enumerate(train_dataloader):
-            
-            if global_step % args.validation.eval_steps == 0 and global_step != 0:
+            # fusion_model.module.base_model.save_pretrained('log') if hasattr(fusion_model, "module") else fusion_model.base_model.save_pretrained('log')
+            if global_step % args.validation.eval_steps == 0:
                 log_validation(
                     config=args.validation,
                     video_config=video_config,
@@ -645,16 +661,17 @@ def main(args, accelerator):
             # TODO: Add ref model update
             models_to_accumulate = [fusion_model]
             with accelerator.accumulate(models_to_accumulate):
-                loss_v, loss_a, info = training_step(batch, 
-                                    fusion_model=fusion_model,
-                                    # fusion_model_ref=fusion_model_ref,
-                                    vae_model_video=vae_model_video,
-                                    vae_model_audio=vae_model_audio,
-                                    text_model=text_model,
-                                    accelerator=accelerator, 
-                                    dpo_beta=args.dpo_beta,
-                                    load_dtype=weight_dtype)
-                accelerator.backward(loss_v + loss_a)
+                dpo_loss_v, dpo_loss_a, sft_loss_v, sft_loss_a, info = training_step(batch, 
+                                                                                    fusion_model=fusion_model,
+                                                                                    # fusion_model_ref=fusion_model_ref,
+                                                                                    vae_model_video=vae_model_video,
+                                                                                    vae_model_audio=vae_model_audio,
+                                                                                    text_model=text_model,
+                                                                                    accelerator=accelerator, 
+                                                                                    dpo_beta=args.dpo_beta,
+                                                                                    load_dtype=weight_dtype)
+                loss = args.dpo_loss_weight * (dpo_loss_v + dpo_loss_a) + args.sft_loss_weight * (sft_loss_v + sft_loss_a)
+                accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     params_to_clip = fusion_model.parameters()
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
@@ -674,9 +691,11 @@ def main(args, accelerator):
                                        args = args, 
                                        ckpt_idx = int(global_step // args.checkpointing_steps - 1))
 
-            logs = {"loss":             loss_v.detach().item() + loss_a.detach().item(),
-                    "loss_v":           loss_v.detach().item(), 
-                    "loss_a":           loss_a.detach().item(), 
+            logs = {"loss":             dpo_loss_v.detach().item() + dpo_loss_a.detach().item(),
+                    "dpo_loss_v":       dpo_loss_v.detach().item(), 
+                    "dpo_loss_a":       dpo_loss_a.detach().item(), 
+                    "sft_loss_v":       sft_loss_v.detach().item(), 
+                    "sft_loss_a":       sft_loss_a.detach().item(), 
                     'v_model_diff':     info['v_model_diff'],
                     'v_model_losses_w': info['v_model_losses_w'],
                     'v_model_losses_l': info['v_model_losses_l'],

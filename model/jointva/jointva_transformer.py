@@ -56,9 +56,11 @@ class JointVADiTModel(ModelMixin):
             video_transformer_weights_path: Optional[str] = None,
             bridge_config: Optional[dict] = None,
             bridge_weights_path:  Optional[str] = None,
+            full_weights_path:  Optional[str] = None,
         ):
         super().__init__()
         self.load_dtype = load_dtype
+        self.gradient_checkpointing = True
 
         # Audio Model
         self.audio_transformer = self._init_class(StableAudioDiTModel, audio_transformer_path, subfolder="transformer")
@@ -111,7 +113,7 @@ class JointVADiTModel(ModelMixin):
                             self.t_emb_dim_1,
                             self.t_emb_dim_2,
                             self.fusion_type,
-                        )
+                        ).to(self.load_dtype)
                     )
             else:
                 raise NotImplementedError()
@@ -154,6 +156,8 @@ class JointVADiTModel(ModelMixin):
             self._init_bridge()
             if bridge_weights_path is not None:
                 self._load_weights(self.dual_dit_blocks, bridge_weights_path)
+            if full_weights_path is not None:
+                self._load_weights(self, full_weights_path)
 
     
     def audio_forward(self, 
@@ -270,13 +274,17 @@ class JointVADiTModel(ModelMixin):
                     encoder_attention_mask = a_encoder_attention_mask, 
                     rotary_embedding = a_rotary_embedding
                 )
-            # # TODO: Uncomment BridgeDiT, Clarify RoPE
             if bridge_idx != len(self.dual_dit_blocks):
                 bridge_block = self.dual_dit_blocks[bridge_idx]
-                v_hidden_states, a_hidden_states = bridge_block(v_hidden_states, a_hidden_states,  # [bs, 32760, 1536]   [1, 122(22.5 * 5.4), 1536]
-                                                                v_time_emb, a_time_emb,            # [1, 1536]  [1, 1536]
-                                                                self.rope_pos_embeds_1d_video,     # ([32760, 128], [32760, 128])
-                                                                self.rope_pos_embeds_1d_audio)     # ([117, 128], [117, 128])
+                if torch.is_grad_enabled() and self.gradient_checkpointing:
+                    v_hidden_states, a_hidden_states = self._gradient_checkpointing_func(
+                        bridge_block, v_hidden_states, a_hidden_states, v_time_emb, a_time_emb, self.rope_pos_embeds_1d_video, self.rope_pos_embeds_1d_audio
+                    )
+                else:
+                    v_hidden_states, a_hidden_states = bridge_block(v_hidden_states, a_hidden_states,  # [bs, 32760, 1536]   [1, 122(22.5 * 5.4), 1536]
+                                                                    v_time_emb, a_time_emb,            # [1, 1536]  [1, 1536]
+                                                                    self.rope_pos_embeds_1d_video,     # ([32760, 128], [32760, 128])
+                                                                    self.rope_pos_embeds_1d_audio)     # ([117, 128], [117, 128])
 
 
         v_out = self.video_transformer.post_forward(

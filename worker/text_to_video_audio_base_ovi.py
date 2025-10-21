@@ -70,6 +70,7 @@ def log_validation(
         data = list(data.items())
     idx = accelerator.process_index if accelerator.process_index < len(data) else 0
     step_range = accelerator.num_processes if accelerator.num_processes <= len(data) else len(data)
+    sync_times = len(data) // step_range
     data = data[idx::step_range]
     output_dir = os.path.join(accelerator.project_dir, args.logging_subdir, str(global_step))
     os.makedirs(output_dir, exist_ok=True)
@@ -212,9 +213,17 @@ def log_validation(
 
             # Save results
             for i in range(batch_size):
-                v_path = f"{output_dir}/{paths[i].split('/')[-1][:-4]}.mp4"                
+                name = paths[i].split('/')[-1].replace('.mp4', '')
+                v_path = f"{output_dir}/{name}.mp4"                  
                 save_video(v_path, generated_video[i], generated_audio[i][0], fps=config.data_info.video_info.fps, sample_rate=config.data_info.audio_info.sr)
-            
+
+            if sync_times != 0: 
+                sync_times -= 1
+                accelerator.wait_for_everyone()
+                print(accelerator.device, sync_times)
+
+                
+        accelerator.wait_for_everyone()
         # Clear cache after validation
         torch.cuda.empty_cache()
         gc.collect()
@@ -622,7 +631,7 @@ def main(args, accelerator):
         fusion_model.train()
         for step, batch in enumerate(train_dataloader):
             
-            if global_step % args.validation.eval_steps == 0 and global_step != 0:
+            if global_step % args.validation.eval_steps == 0:
                 log_validation(
                     config=args.validation,
                     video_config=video_config,

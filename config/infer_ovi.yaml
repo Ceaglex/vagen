@@ -1,0 +1,63 @@
+tag: "ovi_infer"     
+
+# For hf setting
+push_to_hub   : false
+hub_token     : null
+hub_model_id  : null
+# For logging setting
+tracker_name  : null
+output_dir  : ./log/ovi_infer
+report_to   : wandb   
+ckpt_subdir : checkpoints
+logging_subdir: logging
+wandb_init_args:
+  mode      : "offline" # online / offline  
+  project   : "Ovi"
+  name      : "ovi_infer"
+  tags      : null
+  notes     : ""
+seed            : 103
+mixed_precision : bf16   # Options: ["null", "fp16", "bf16"]
+
+
+save_name : "test"
+lora_path : '/home/chengxin/chengxin/vagen/log/ovi_fusion_dpo_sft/checkpoints/checkpoint_0/learner'
+ckpt_dir: "/home/chengxin/chengxin/Ovi/ckpts"  # Ovi checkpoint directory
+fusion_checkpoint_path: "/home/chengxin/chengxin/Ovi/ckpts/Ovi/model.safetensors"  # Fusion model checkpoint
+
+
+# Ovi model trainable setting
+lora_config:
+  lora_load_path: ${lora_path}
+  use_lora: true
+  rank: 128  
+  lora_alpha: 64
+  lora_modules: ['k_fusion', 'v_fusion']
+
+
+# Validation
+validation: 
+  scheduler:
+    flow_shift: 5.0          ##
+    num_train_timesteps: 1000
+  
+  prompt_index_file: /home/chengxin/chengxin/vagen/data/ttva/moviegen_subset_test.json   
+  batch_size : 1
+  num_va_per_prompt: 1
+  seed: ${seed}
+  slg_layer: 11
+  num_inference_steps: 40   
+                       
+  v_negative_prompt : "jitter, bad hands, blur, distortion"
+  video_size: [992, 512]
+  v_guidance_scale: 4      
+
+  a_negative_prompt : "robotic, muffled, echo, distorted"
+  a_guidance_scale: 3
+
+  data_info:
+    video_info:
+      fps: 24
+    audio_info:
+      sr: 16000
+      channels: 1
