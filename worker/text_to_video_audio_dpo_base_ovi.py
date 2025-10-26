@@ -46,6 +46,7 @@ from utils.model_loading import (
 )
 from utils.fm_solvers import FlowUniPCMultistepScheduler
 from utils.va_processing import snap_hw_to_multiple_of_32
+from model.ema import EMAModuleWrapper
 
 logger = get_logger(__name__)
 
@@ -57,6 +58,8 @@ def log_validation(
     video_config,
     audio_config,
     fusion_model,
+    ema,
+    transformer_training_parameters,
     vae_model_video,
     vae_model_audio,
     text_model,
@@ -98,6 +101,9 @@ def log_validation(
     slg_layer = config.slg_layer
     do_classifier_free_guidance = (a_guidance_scale > 1.0) or (v_guidance_scale > 1.0)
     fusion_model.eval()
+    # TODO: Add ema
+    fusion_model.module.set_adapter("learner") if hasattr(fusion_model, "module") else fusion_model.set_adapter("learner")
+    ema.copy_ema_to(transformer_training_parameters, store_temp=True)
 
 
     with torch.no_grad():
@@ -224,6 +230,8 @@ def log_validation(
 
                 
         accelerator.wait_for_everyone()
+        # TODO Add EMA
+        ema.copy_temp_to(transformer_training_parameters)
         # Clear cache after validation
         torch.cuda.empty_cache()
         gc.collect()
@@ -391,7 +399,8 @@ def training_step(batch,
 
 
 
-def checkpointing_step(model, accelerator, logger, args, ckpt_idx = 0):
+def checkpointing_step(model, accelerator, logger, args, 
+                      ema, transformer_training_parameters, ckpt_idx = 0):
     ckpt_dir = os.path.join(accelerator.project_dir, 'checkpoints')
     os.makedirs(ckpt_dir, exist_ok=True)
     
@@ -410,13 +419,15 @@ def checkpointing_step(model, accelerator, logger, args, ckpt_idx = 0):
             for removing_checkpoint in removing_checkpoints:
                 removing_checkpoint = os.path.join(ckpt_dir, removing_checkpoint)
                 shutil.rmtree(removing_checkpoint)
-    # Save whole model lora
+    # TODO: Add ema
+    ema.copy_ema_to(transformer_training_parameters, store_temp=True)
+
     accelerator.save_state()
-    # Save lora
     lora_save_path = f"{ckpt_dir}/checkpoint_{ckpt_idx}"
     model.module.base_model.save_pretrained(lora_save_path) if hasattr(model, "module") else model.base_model.save_pretrained(lora_save_path)
     logger.info(f"Saved state to {ckpt_dir}")
 
+    ema.copy_temp_to(transformer_training_parameters)
 
 def main(args, accelerator):
 
@@ -522,8 +533,15 @@ def main(args, accelerator):
             if any(opt_param in name for opt_param in args.optimize_params):
                 param.requires_grad = True
 
+    ## TODO: Add EMA
     # Filter parameters based on optimize_params
-    transformer_training_parameters = list(filter(lambda p: p.requires_grad, fusion_model.parameters()))
+    transformer_training_parameters = list()
+    for name, param in fusion_model.named_parameters():
+        if "learner" in name:
+            assert param.requires_grad == True
+            transformer_training_parameters.append(param)
+    ema = EMAModuleWrapper(transformer_training_parameters, decay=0.9, update_step_interval=8, device=accelerator.device)
+
     if args.scale_lr:
         args.learning_rate = (args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size_local * accelerator.num_processes)
     print(len(transformer_training_parameters), args.learning_rate)
@@ -649,6 +667,8 @@ def main(args, accelerator):
                     video_config=video_config,
                     audio_config=audio_config,
                     fusion_model=fusion_model,
+                    ema = ema,
+                    transformer_training_parameters = transformer_training_parameters,
                     vae_model_video=vae_model_video,
                     vae_model_audio=vae_model_audio,
                     text_model=text_model,
@@ -684,11 +704,14 @@ def main(args, accelerator):
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 global_step += 1
+                ema.step(transformer_training_parameters, global_step)
                 if global_step % args.checkpointing_steps == 0:
                     checkpointing_step(model = fusion_model,
                                        accelerator = accelerator, 
                                        logger = logger, 
                                        args = args, 
+                                       ema = ema,
+                                       transformer_training_parameters = transformer_training_parameters,
                                        ckpt_idx = int(global_step // args.checkpointing_steps - 1))
 
             logs = {"loss":             dpo_loss_v.detach().item() + dpo_loss_a.detach().item(),
@@ -710,17 +733,20 @@ def main(args, accelerator):
                     'a_ref_losses_l':   info['a_ref_losses_l'],
                     "lr":               lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
+            accelerator.wait_for_everyone()
             accelerator.log(logs, step=global_step)
             if global_step >= args.max_train_steps:
                 break
 
     # Save the lora layers
     logger.info("=> Saving the trained model ...")
-    checkpointing_step(model = fusion_model,
-                        accelerator = accelerator, 
-                        logger = logger, 
-                        args = args, 
-                        ckpt_idx = int(global_step // args.checkpointing_steps - 1))
+    # checkpointing_step(model = fusion_model,
+    #                     accelerator = accelerator, 
+    #                     logger = logger, 
+    #                     args = args, 
+    #                     ema = ema,
+    #                     transformer_training_parameters = transformer_training_parameters,
+    #                     ckpt_idx = int(global_step // args.checkpointing_steps - 1))
 
     accelerator.wait_for_everyone()
     accelerator.end_training()

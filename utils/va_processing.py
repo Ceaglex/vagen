@@ -131,16 +131,18 @@ def add_audio_to_video(video_path, audio_path, output_path):
         if audio.duration > video.duration:
             audio = audio.subclipped(0, video.duration)  # 裁剪音频到视频时长
             # audio = audio.subclipped(audio.duration - video.duration, audio.duration)
-        video_with_audio = video.with_audio(audio)
-        video_with_audio.write_videofile(output_path, codec="libx264", audio_codec="aac")       
+        # video_with_audio = video.with_audio(audio)
+        video.audio = audio
+        video.write_videofile(output_path, codec="libx264", audio_codec="aac")       
         video.close()
         audio.close() 
-        video_with_audio.close()
+        # video_with_audio.close()
         
         print(f"视频已保存至：{output_path}")
         
     except Exception as e:
         print(f"发生错误：{e}")
+        
 
 
 def extract_batch_mel(waveform, 

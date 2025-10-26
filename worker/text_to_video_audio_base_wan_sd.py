@@ -9,6 +9,7 @@ import json
 # from datetime import datetime
 # from typing import List, Optional, Tuple, Union, Dict, Any
 import time
+import pickle
 
 import random
 import torch
@@ -218,9 +219,14 @@ def log_validation(
                     v_path = f"{output_dir}/{path.split('/')[-1][:-4]}.mp4"
                     a_path = f"{output_dir}/{path.split('/')[-1][:-4]}.wav"
                     o_path = f"{output_dir}/{path.split('/')[-1][:-4]}_.mp4"
-                    export_to_video(gen_video[i], v_path, fps=config.data_info.video_info.fps)
-                    torchaudio.save(a_path, gen_audio[i].cpu().to(torch.float32), sample_rate=config.data_info.audio_info.sr)
-                    add_audio_to_video(video_path = v_path, audio_path = a_path, output_path = o_path)
+                    try:
+                        # with open(f"{output_dir}/{path.split('/')[-1][:-4]}.pkl", 'wb') as file:
+                            # pickle.dump(gen_video[i], file)
+                        export_to_video(gen_video[i], v_path, fps=config.data_info.video_info.fps)
+                        torchaudio.save(a_path, gen_audio[i].cpu().to(torch.float32), sample_rate=config.data_info.audio_info.sr)
+                        add_audio_to_video(video_path = v_path, audio_path = a_path, output_path = o_path)
+                    except Exception as e:
+                        print(f"Error when saving {path.split('/')[-1][:-4]} -- {e}")
                 # accelerator.wait_for_everyone()
                 if sync_times != 0: 
                     sync_times -= 1
@@ -234,6 +240,7 @@ def log_validation(
             gc.collect()
             free_memory()
     vajoint_dit.train()
+    
     
 
 def training_step(batch, 
