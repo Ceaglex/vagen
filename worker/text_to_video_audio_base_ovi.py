@@ -646,7 +646,7 @@ def main(args, accelerator):
         fusion_model.train()
         for step, batch in enumerate(train_dataloader):
             
-            if global_step % args.validation.eval_steps == 0:
+            if global_step % args.validation.eval_steps == 0 and global_step != 0:
                 log_validation(
                     config=args.validation,
                     video_config=video_config,

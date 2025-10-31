@@ -6,14 +6,14 @@ hub_token     : null
 hub_model_id  : null
 # For logging setting
 tracker_name  : null
-output_dir  : ./log/ovi_fusion_dpo1_sft1_15
+output_dir  : ./log/ovi_fusion_dpo_55_11 ####################### lr_beta
 report_to   : wandb   
 ckpt_subdir : checkpoints
 logging_subdir: logging
 wandb_init_args:
-  mode      : "offline" # online / offline   #######################
+  mode      : "online" # online / offline   
   project   : "Ovi"
-  name      : "ovi_fusion_dpo1_sft1_15"
+  name      : "ovi_fusion_dpo_55_11"     #######################
   tags      : null
   notes     : ""
 
@@ -52,18 +52,18 @@ mixed_precision : bf16   # Options: ["null", "fp16", "bf16"]
 allow_tf32      : false 
 # matmul_precision  : medium 
 # Steps and saving
-num_train_epochs        : 10  ##
-max_train_steps         : null
-checkpointing_steps     : 200   
+num_train_epochs        : 10     #######################
+max_train_steps         : null 
+checkpointing_steps     : 200    #######################
 checkpoints_total_limit : 40 
 # For batch and LR setting
 num_workers             : 4
 train_batch_size_local  : 1   ##
 gradient_accumulation_steps : 1
-learning_rate   : 1e-5     
-dpo_beta : 0.1 
-dpo_loss_weight : 1
-sft_loss_weight : 1
+learning_rate   : 5e-5     
+dpo_beta : 0.1                    #######################
+dpo_loss_weight : 1               #######################
+sft_loss_weight : 0               #######################
 scale_lr        : false     
 lr_scheduler    : "cosine_with_restarts"  # Options: ["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"]
 lr_warmup_steps : 1000

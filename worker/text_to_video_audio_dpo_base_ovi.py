@@ -267,7 +267,7 @@ def training_step(batch,
     with torch.no_grad():
         # Encode text
         text_embeddings = text_model(text_prompt, text_model.device)
-        text_embeddings = [emb.to(load_dtype).to(accelerator.device) for emb in text_embeddings]
+        text_embeddings = [emb.to(load_dtype).to(accelerator.device).detach() for emb_ in text_embeddings for emb in [copy.deepcopy(emb_), copy.deepcopy(emb_)]] # DPO, 2 prompts
 
         # Encode video and audio to latents
         v_latents = vae_model_video.wrapped_encode(video_pixel.to(load_dtype)).to(load_dtype)
@@ -661,7 +661,7 @@ def main(args, accelerator):
         fusion_model.train()
         for step, batch in enumerate(train_dataloader):
             # fusion_model.module.base_model.save_pretrained('log') if hasattr(fusion_model, "module") else fusion_model.base_model.save_pretrained('log')
-            if global_step % args.validation.eval_steps == 0:
+            if global_step % args.validation.eval_steps == 0 and global_step != 0:
                 log_validation(
                     config=args.validation,
                     video_config=video_config,
@@ -714,7 +714,7 @@ def main(args, accelerator):
                                        transformer_training_parameters = transformer_training_parameters,
                                        ckpt_idx = int(global_step // args.checkpointing_steps - 1))
 
-            logs = {"loss":             dpo_loss_v.detach().item() + dpo_loss_a.detach().item(),
+            logs = {"loss":             loss.detach().item(),
                     "dpo_loss_v":       dpo_loss_v.detach().item(), 
                     "dpo_loss_a":       dpo_loss_a.detach().item(), 
                     "sft_loss_v":       sft_loss_v.detach().item(), 

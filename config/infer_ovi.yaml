@@ -20,8 +20,8 @@ seed            : 103
 mixed_precision : bf16   # Options: ["null", "fp16", "bf16"]
 
 
-save_name : "600"
-lora_path : '/home/chengxin/chengxin/vagen/log/ovi_fusion_dpo_sft_15/checkpoints/checkpoint_2/learner'   #######
+save_name : "1600_sft"  ##############
+lora_path : '/home/chengxin/chengxin/vagen/log/ovi_fusion_sft_15/checkpoints/checkpoint_7/learner'   ##############
 ckpt_dir: "/home/chengxin/chengxin/Ovi/ckpts"  # Ovi checkpoint directory
 fusion_checkpoint_path: "/home/chengxin/chengxin/Ovi/ckpts/Ovi/model.safetensors"  # Fusion model checkpoint
 
