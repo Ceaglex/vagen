@@ -76,3 +76,4 @@ CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
     worker/text_to_video_audio_dpo_base_ovi.py \
     --config config/ttva_dpo_ovi.yaml 
 
+ 

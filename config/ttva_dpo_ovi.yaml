@@ -6,14 +6,14 @@ hub_token     : null
 hub_model_id  : null
 # For logging setting
 tracker_name  : null
-output_dir  : ./log/ovi_fusion_dpo_55_11 ####################### lr_beta
+output_dir  : ./log/ovi_fusion_dpo_15_11_v2 ####################### lr_beta
 report_to   : wandb   
 ckpt_subdir : checkpoints
 logging_subdir: logging
 wandb_init_args:
   mode      : "online" # online / offline   
   project   : "Ovi"
-  name      : "ovi_fusion_dpo_55_11"     #######################
+  name      : "ovi_fusion_dpo_15_11_v2"     #######################
   tags      : null
   notes     : ""
 
@@ -60,10 +60,10 @@ checkpoints_total_limit : 40
 num_workers             : 4
 train_batch_size_local  : 1   ##
 gradient_accumulation_steps : 1
-learning_rate   : 5e-5     
-dpo_beta : 0.1                    #######################
-dpo_loss_weight : 1               #######################
-sft_loss_weight : 0               #######################
+learning_rate   : 1e-5             #######################
+dpo_beta : 1e-1                    #######################
+dpo_loss_weight : 1                #######################
+sft_loss_weight : 0                #######################
 scale_lr        : false     
 lr_scheduler    : "cosine_with_restarts"  # Options: ["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"]
 lr_warmup_steps : 1000
@@ -109,6 +109,7 @@ hy_dataloader:
   target_channels: 1          
   target_duration: 5.0      
   uncond_prob: 0.0          
+  weights: [0,0,20]        ####################### ["mask_video", "mask_audio", "shift"]  
   # # # # negetive_prompt: ""       
   # DataLoader parameters
   shuffle: true               

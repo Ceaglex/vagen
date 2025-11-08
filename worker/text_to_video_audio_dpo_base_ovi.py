@@ -273,17 +273,17 @@ def training_step(batch,
         v_latents = vae_model_video.wrapped_encode(video_pixel.to(load_dtype)).to(load_dtype)
         a_latents = vae_model_audio.wrapped_encode(waveform.to(torch.float32)).transpose(1, 2).to(load_dtype)
 
-        # # # Check Latent
-        # audio_latents_for_vae = a_latents.transpose(1, 2)  # 1, c, l
-        # generated_audio = vae_model_audio.wrapped_decode(audio_latents_for_vae)
-        # generated_audio = generated_audio.cpu().float().numpy()         
-        # video_latents_for_vae = v_latents    # 1, c, f, h, w
-        # generated_video = vae_model_video.wrapped_decode(video_latents_for_vae)
-        # generated_video = generated_video.cpu().float().numpy()  # c, f, h, w
-        # for i in range(batch_size):
-        #     v_path = f"test{i}.mp4"                
-        #     save_video(v_path, generated_video[i], generated_audio[i][0], fps=24, sample_rate=16000)
-            
+        # # # # Check Latent
+        # # audio_latents_for_vae = a_latents.transpose(1, 2)  # 1, c, l
+        # # generated_audio = vae_model_audio.wrapped_decode(audio_latents_for_vae)
+        # # generated_audio = generated_audio.cpu().float().numpy()         
+        # # video_latents_for_vae = v_latents    # 1, c, f, h, w
+        # # generated_video = vae_model_video.wrapped_decode(video_latents_for_vae)
+        # # generated_video = generated_video.cpu().float().numpy()  # c, f, h, w
+        # # for i in range(batch_size):
+        # #     v_path = f"test{i}.mp4"                
+        # #     save_video(v_path, generated_video[i], generated_audio[i][0], fps=24, sample_rate=16000)
+
         # # Add noise
         # v_noise = torch.randn_like(v_latents).detach()
         # a_noise = torch.randn_like(a_latents).detach()
@@ -392,8 +392,8 @@ def training_step(batch,
     # # Calculate SFT MSE losses
     # loss_v = nn_func.mse_loss(pred_vid.float(), v_target.float(), reduction="mean")
     # loss_a = nn_func.mse_loss(pred_audio.float(), a_target.float(), reduction="mean")
-    v_sft_loss = v_model_losses_w
-    a_sft_loss = a_model_losses_w
+    v_sft_loss = F.logsigmoid(v_model_losses_w).mean()
+    a_sft_loss = F.logsigmoid(a_model_losses_w).mean()
 
     return v_dpo_loss, a_dpo_loss, v_sft_loss, a_sft_loss, info
 

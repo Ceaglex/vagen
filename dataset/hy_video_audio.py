@@ -21,7 +21,8 @@ class VideoAudioDataset(Dataset):
                  value_range=(-1, 1), 
                  target_sr=44100,
                  target_channels=2,
-                 target_duration=5.0):
+                 target_duration=5.0,
+                 weights=[10,10,10]):
         with open(json_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)
 
@@ -43,6 +44,10 @@ class VideoAudioDataset(Dataset):
         self.target_sr = target_sr
         self.target_channels = target_channels
         self.target_duration = target_duration
+
+        # model
+        self.modes = ["mask_video", "mask_audio", "shift"]
+        self.weights = weights
 
 
 
@@ -292,28 +297,87 @@ class VideoAudioDataset(Dataset):
         }
 
 
+    # def contruct_lose_vapair(self)
+
+
     def load_raw_video_audio_shift(self, video_path, info):
         v_prompt = info['video_caption']
         a_prompt = info['audio_caption']
-
         waveform, raw_sr = torchaudio.load(video_path, backend='ffmpeg')
-        current_samples = waveform.shape[1]
-        target_samples = int(self.target_duration * raw_sr)
-        max_start = current_samples - target_samples
-        # start_duration1 = random.randint(0, max_start-1) / raw_sr
-        # start_duration2 = random.randint(0, max_start-1) / raw_sr
-        start_duration1, start_duration2 = self.sample_two_starts_discrete(max_start, raw_sr, min_gap_seconds = 1)
+        max_start = waveform.shape[1] - int(self.target_duration * raw_sr)
+        start_duration = random.randint(0, max_start-1) / raw_sr
+        # mode = random.choice(self.modes) #
+        mode = random.choices(self.modes, weights=self.weights, k=1)[0] 
 
-        if random.uniform(0,1) < 0.5:
-            waveform1, start_duration1 = self.read_audio(video_path, start_duration1)
-            waveform2, start_duration2 = self.read_audio(video_path, start_duration2)
-            video_pixel1, start_duration1 = self.read_video(video_path, start_duration = start_duration1)  # [T, C, H, W]
-            video_pixel2 = copy.deepcopy(video_pixel1)
-        else:
-            video_pixel1, start_duration1 = self.read_video(video_path, start_duration = start_duration1)  # [T, C, H, W]
-            video_pixel2, start_duration2 = self.read_video(video_path, start_duration = start_duration2)  # [T, C, H, W]
-            waveform1, start_duration1 = self.read_audio(video_path, start_duration1)
+
+        ## Shift
+        if mode == 'shift':
+            start_duration, start_duration2 = self.sample_two_starts_discrete(max_start, raw_sr, min_gap_seconds = 1)
+            waveform1, start_duration = self.read_audio(video_path, start_duration)
+            video_pixel1, start_duration = self.read_video(video_path, start_duration = start_duration)
             waveform2 = copy.deepcopy(waveform1)
+            video_pixel2 = copy.deepcopy(video_pixel1)
+            if random.uniform(0,1) < 0.5:
+                waveform2, start_duration2 = self.read_audio(video_path, start_duration2)  
+            else:
+                video_pixel2, start_duration2 = self.read_video(video_path, start_duration = start_duration2)  
+                
+        ## Mask Video
+        elif mode == 'mask_video':
+            waveform1, start_duration = self.read_audio(video_path, start_duration)
+            video_pixel1, start_duration = self.read_video(video_path, start_duration = start_duration)
+            waveform2 = copy.deepcopy(waveform1)
+            video_pixel2 = copy.deepcopy(video_pixel1)
+
+            T = video_pixel2.shape[1]
+            start_frame = random.randint(0, max(0, T // 3))
+            end_frame = random.randint((T * 2) // 3, T - 1)
+            
+            # # Get start and end frames
+            # start_frame_data = video_pixel2[:, start_frame:start_frame+1, :, :]  # [C, 1, H, W]
+            # end_frame_data = video_pixel2[:, end_frame:end_frame+1, :, :]  # [C, 1, H, W]
+            # alpha = torch.linspace(0, 1, end_frame - start_frame + 1).view(1, -1, 1, 1).to(video_pixel2.device)  # [1, num_interp_frames, 1, 1]
+            # interp_frames = (1 - alpha) * start_frame_data + alpha * end_frame_data  # [C, num_interp_frames, H, W]
+            # video_pixel2[:, start_frame:end_frame+1, :, :] = interp_frames
+
+
+            num_source_frames = random.randint(1, min(6, T // 10))
+            source_frame_indices = torch.linspace(0, num_source_frames-1, num_source_frames).long()
+            source_frames = video_pixel2[:, source_frame_indices, :, :]  # [C, num_source_frames, H, W]
+            reversed_frames = torch.flip(source_frames, dims=[1])  # Reverse along time dimension
+            pattern_frames = torch.cat([source_frames, reversed_frames], dim=1)  # [C, 2*num_source_frames, H, W]
+            num_patterns = (T + pattern_frames.shape[1] - 1) // pattern_frames.shape[1]  # Ceiling division
+            video_pixel2 = pattern_frames.repeat(1, num_patterns, 1, 1)[:, :T, :, :]  # [C, T, H, W]
+
+            # repeat_per_frame = T // num_source_frames
+            # remainder = T % num_source_frames
+            # slow_motion_frames = []
+            # for i in range(num_source_frames):
+            #     frames_to_repeat = repeat_per_frame + (1 if i < remainder else 0)
+            #     slow_motion_frames.append(source_frames[:, i:i+1, :, :].repeat(1, frames_to_repeat, 1, 1))
+            # video_pixel2 = torch.cat(slow_motion_frames, dim=1)  # [C, T, H, W]
+
+        ## Mask Audio
+        elif mode == 'mask_audio':
+            waveform1, start_duration = self.read_audio(video_path, start_duration)
+            video_pixel1, start_duration = self.read_video(video_path, start_duration = start_duration)
+            waveform2 = copy.deepcopy(waveform1)
+            video_pixel2 = copy.deepcopy(video_pixel1)
+            waveform2 = waveform2 * 0.002
+            
+            # S = waveform2.shape[1]
+            # mask_start_sample = random.randint(0, S // 3)
+            # mask_end_sample = random.randint(2 * S // 3, S)
+            # length = mask_end_sample - mask_start_sample
+            # t = torch.linspace(0, 1, steps=length, device=waveform2.device, dtype=waveform2.dtype)
+            # min_amp = 0.1 
+            # env = 1.0 - (1.0 - min_amp) * 0.5 * (1.0 - torch.cos(2 * torch.pi * t))
+            # waveform2[:, mask_start_sample:mask_end_sample] = waveform2[:, mask_start_sample:mask_end_sample] * 0.001
+        
+        ## 
+        else:
+            raise NotImplementedError("Other Lose Pair Contruction Mode is not Supported.")
+
 
 
         if random.uniform(0,1) < self.uncond_prob:
@@ -323,13 +387,14 @@ class VideoAudioDataset(Dataset):
 
 
         return {
+            "mode": mode,
             "video_path": video_path,
             "video_pixel": video_pixel1,
             "video_pixel_lose": video_pixel2,
             "audio_waveform": waveform1,
             "audio_waveform_lose": waveform2,
-            "start_duration1": start_duration1,
-            "start_duration2": start_duration2, 
+            # "start_duration1": start_duration1,
+            # "start_duration2": start_duration2, 
             "v_prompt": v_prompt,
             "a_prompt": a_prompt,
         }
@@ -365,6 +430,7 @@ def build_video_loader(args):
         target_sr=args.target_sr if 'target_sr' in args else 44100,
         target_channels=args.target_channels if 'target_channels' in args else 2,
         target_duration=args.target_duration if 'target_duration' in args else 5.0,
+        weights=args.weights if 'weights' in args else [10,10,10]
         # negetive_prompt=args.negetive_prompt if 'negetive_prompt' in args else '',
         # negetive_prompt_embed=args.negetive_prompt_embed if 'negetive_prompt_embed' in args else None,
 
