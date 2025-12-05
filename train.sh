@@ -6,8 +6,8 @@ export TOKENIZERS_PARALLELISM=false
 # export https_proxy=http://star-proxy.oa.com:3128
 
 
-GPU_IDS="0,1,2,3,4,5,6,7"
-GPU_NUMS=8
+GPU_IDS="0,1,2,3"
+GPU_NUMS=4
 
 
 : "
@@ -71,9 +71,14 @@ GPU_NUMS=8
 
 
 
-CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
-    --main_process_port 29503 \
-    worker/text_to_video_audio_dpo_base_ovi.py \
-    --config config/ttva_dpo_ovi.yaml 
+# CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
+#     --main_process_port 29503 \
+#     worker/text_to_video_audio_dpo_base_ovi.py \
+#     --config config/ttva_dpo_ovi.yaml 
 
  
+
+ CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
+    --main_process_port 29503 \
+    worker/text_to_video_audio_dpo_dsft_base_ovi.py \
+    --config config/ttva_dpo_dsft_ovi.yaml 

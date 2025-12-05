@@ -1,4 +1,4 @@
-# import pdb; pdb.set_trace()
+# # import pdb; pdb.set_trace()
 import logging, math, os, shutil
 import numpy as np
 from pathlib import Path
@@ -6,37 +6,25 @@ from tqdm.auto import tqdm
 import copy
 import soundfile as sf
 import json
-import time
 
 import random
 import torch
 import torch.nn.functional as F
-import torchaudio
-import torch.nn.functional as nn_func
-from torch.cuda.amp import autocast
 import gc
-from accelerate import Accelerator, DistributedType
 from accelerate.logging import get_logger
 
 from transformers import SpeechT5HifiGan
-from diffusers.models.auto_model import AutoModel
-from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
+# from diffusers.models.auto_model import AutoModel
+# from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params, free_memory
-from diffusers.utils import check_min_version
-from diffusers.utils.state_dict_utils import convert_unet_state_dict_to_peft
-from diffusers.utils.export_utils import export_to_video
 from diffusers.utils.import_utils import is_wandb_available
-from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
-from diffusers.utils.torch_utils import is_compiled_module
-from diffusers.utils.torch_utils import randn_tensor
 from peft import LoraConfig, PeftModel, get_peft_model
 
 from worker.base import prepare_config, prepare_everything
 from dataset.hy_video_audio import build_video_loader
-from utils.va_processing import add_audio_to_video, save_video
-from utils.text_encoding import get_t5_prompt_embeds, encode_prompt, encode_prompt_sd, encode_duration_sd, prepare_extra_step_kwargs
-from utils.optimizer import get_optimizer, init_weights, init_class, load_weights
+from utils.va_processing import save_video
+from utils.optimizer import get_optimizer
 from utils.model_loading import (
     init_fusion_score_model_ovi, 
     init_text_model, 
@@ -51,6 +39,42 @@ from model.ema import EMAModuleWrapper
 logger = get_logger(__name__)
 
 
+
+
+
+def calculate_dynamic_weights(info, dynamic_mode = None):
+
+    v_diff = info['v_model_diff']  # Tensor (N,)
+    a_diff = info['a_model_diff']  # Tensor (N,)
+
+    if dynamic_mode is None:
+        dpo_weight_v = torch.ones(info['v_model_diff'])
+        sft_weight_v = torch.ones(info['v_model_diff'])
+        dpo_weight_a = torch.ones(info['a_model_diff'])
+        sft_weight_a = torch.ones(info['a_model_diff'])
+
+    elif dynamic_mode == 'DPO':
+        dpo_weight_v = torch.ones(info['v_model_diff'])
+        sft_weight_v = torch.zeros(info['v_model_diff'])
+        dpo_weight_a = torch.ones(info['a_model_diff'])
+        sft_weight_a = torch.zeros(info['a_model_diff'])
+
+    elif dynamic_mode == 'SFT':
+        dpo_weight_v = torch.zeros(info['v_model_diff'])
+        sft_weight_v = torch.ones(info['v_model_diff'])
+        dpo_weight_a = torch.zeros(info['a_model_diff'])
+        sft_weight_a = torch.ones(info['a_model_diff'])
+
+    # dpo_weight_v = torch.ge(v_diff, 0).float() 
+    # sft_weight_v = 1 - dpo_weight_v
+    # sft_weight_v = torch.ones(info['v_model_diff'])
+    
+
+    # dpo_weight_a = torch.ge(a_diff, 0).float()
+    # sft_weight_a = 1 - dpo_weight_a
+    # sft_weight_a = torch.ones(info['a_model_diff'])
+    
+    return dpo_weight_v, dpo_weight_a, sft_weight_v, sft_weight_a
 
 
 def log_validation(
@@ -79,10 +103,6 @@ def log_validation(
     os.makedirs(output_dir, exist_ok=True)
     print(f"Saving path :{output_dir}")
     
-    # Initialize generators
-    v_generator = torch.Generator(accelerator.device).manual_seed(config.seed) if config.seed is not None else None
-    a_generator = torch.Generator(accelerator.device).manual_seed(config.seed) if config.seed is not None else None
-    
     # Initialize schedulers
     scheduler_video = FlowUniPCMultistepScheduler(num_train_timesteps=config.scheduler.num_train_timesteps, shift=1, use_dynamic_shifting=False)
     scheduler_audio = FlowUniPCMultistepScheduler(num_train_timesteps=config.scheduler.num_train_timesteps, shift=1, use_dynamic_shifting=False)
@@ -108,6 +128,10 @@ def log_validation(
 
     with torch.no_grad():
         for start_idx in range(0, len(data), batch_size):
+            # Each sample Same Seed
+            v_generator = torch.Generator(accelerator.device).manual_seed(config.seed) if config.seed is not None else None
+            a_generator = torch.Generator(accelerator.device).manual_seed(config.seed) if config.seed is not None else None
+
             end_idx = min(len(data), start_idx + batch_size)
             paths = [data[i][0] for i in range(start_idx, end_idx)]
             infos = [data[i][1] for i in range(start_idx, end_idx)]
@@ -368,31 +392,36 @@ def training_step(batch,
     scale_term = -0.5 * dpo_beta
 
     v_inside_term = scale_term * (v_model_diff - v_ref_diff)   # v_model_diff - v_ref_diff 越负越好， v_inside_term越大越好
-    v_dpo_loss = -F.logsigmoid(v_inside_term).mean()
+    v_dpo_loss = -F.logsigmoid(v_inside_term)
 
     a_inside_term = scale_term * (a_model_diff - a_ref_diff)
-    a_dpo_loss = -F.logsigmoid(a_inside_term).mean()
+    a_dpo_loss = -F.logsigmoid(a_inside_term)
 
     info = {
-        'v_model_diff':v_model_diff.mean().detach().item(),
-        'v_model_losses_w':v_model_losses_w.mean().detach().item(),
-        'v_model_losses_l':v_model_losses_l.mean().detach().item(),
-        'a_model_diff':a_model_diff.mean().detach().item(),
-        'a_model_losses_w':a_model_losses_w.mean().detach().item(),
-        'a_model_losses_l':a_model_losses_l.mean().detach().item(),
-        'v_ref_diff':v_ref_diff.mean().detach().item(),
-        'v_ref_losses_w':v_ref_losses_w.mean().detach().item(),
-        'v_ref_losses_l':v_ref_losses_l.mean().detach().item(),
-        'a_ref_diff':a_ref_diff.mean().detach().item(),
-        'a_ref_losses_w':a_ref_losses_w.mean().detach().item(),
-        'a_ref_losses_l':a_ref_losses_l.mean().detach().item(),
+        'v_dpo_loss': v_dpo_loss,
+        'v_model_diff':v_model_diff,
+        'v_model_losses_w':v_model_losses_w,
+        'v_model_losses_l':v_model_losses_l,
+        'a_dpo_loss': a_dpo_loss,
+        'a_model_diff':a_model_diff,
+        'a_model_losses_w':a_model_losses_w,
+        'a_model_losses_l':a_model_losses_l,
+        'v_ref_diff':v_ref_diff,
+        'v_ref_losses_w':v_ref_losses_w,
+        'v_ref_losses_l':v_ref_losses_l,
+        'a_ref_diff':a_ref_diff,
+        'a_ref_losses_w':a_ref_losses_w,
+        'a_ref_losses_l':a_ref_losses_l,
     }
     
     # # Calculate SFT MSE losses
     # loss_v = nn_func.mse_loss(pred_vid.float(), v_target.float(), reduction="mean")
     # loss_a = nn_func.mse_loss(pred_audio.float(), a_target.float(), reduction="mean")
+    # v_sft_loss = F.logsigmoid(v_model_losses_w)
+    # a_sft_loss = F.logsigmoid(a_model_losses_w)
     v_sft_loss = v_model_losses_w
     a_sft_loss = a_model_losses_w
+
 
     return v_dpo_loss, a_dpo_loss, v_sft_loss, a_sft_loss, info
 
@@ -660,7 +689,7 @@ def main(args, accelerator):
         fusion_model.train()
         for step, batch in enumerate(train_dataloader):
             # fusion_model.module.base_model.save_pretrained('log') if hasattr(fusion_model, "module") else fusion_model.base_model.save_pretrained('log')
-            if global_step % args.validation.eval_steps == 0 and global_step != 0:
+            if global_step % args.validation.eval_steps == 0:
                 log_validation(
                     config=args.validation,
                     video_config=video_config,
@@ -689,7 +718,12 @@ def main(args, accelerator):
                                                                                     accelerator=accelerator, 
                                                                                     dpo_beta=args.dpo_beta,
                                                                                     load_dtype=weight_dtype)
-                loss = args.dpo_loss_weight * (dpo_loss_v + dpo_loss_a) + args.sft_loss_weight * (sft_loss_v + sft_loss_a)
+
+                dpo_weight_v, dpo_weight_a, sft_weight_v, sft_weight_a = calculate_dynamic_weights(info, args.dynamic_mode)
+                # dpo_weight_v, dpo_weight_a = args.dpo_loss_weight, args.dpo_loss_weight 
+                # sft_weight_v, sft_weight_a = args.sft_loss_weight, args.sft_loss_weight
+                loss = dpo_weight_v * dpo_loss_v + dpo_weight_a * dpo_loss_a + sft_weight_v * sft_loss_v + sft_weight_a * sft_loss_a
+                loss = loss.mean()
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     params_to_clip = fusion_model.parameters()
@@ -714,22 +748,26 @@ def main(args, accelerator):
                                        ckpt_idx = int(global_step // args.checkpointing_steps - 1))
 
             logs = {"loss":             loss.detach().item(),
-                    "dpo_loss_v":       dpo_loss_v.detach().item(), 
-                    "dpo_loss_a":       dpo_loss_a.detach().item(), 
-                    "sft_loss_v":       sft_loss_v.detach().item(), 
-                    "sft_loss_a":       sft_loss_a.detach().item(), 
-                    'v_model_diff':     info['v_model_diff'],
-                    'v_model_losses_w': info['v_model_losses_w'],
-                    'v_model_losses_l': info['v_model_losses_l'],
-                    'a_model_diff':     info['a_model_diff'],
-                    'a_model_losses_w': info['a_model_losses_w'],
-                    'a_model_losses_l': info['a_model_losses_l'],
-                    'v_ref_diff':       info['v_ref_diff'],
-                    'v_ref_losses_w':   info['v_ref_losses_w'],
-                    'v_ref_losses_l':   info['v_ref_losses_l'],
-                    'a_ref_diff':       info['a_ref_diff'],
-                    'a_ref_losses_w':   info['a_ref_losses_w'],
-                    'a_ref_losses_l':   info['a_ref_losses_l'],
+                    "dpo_loss_v":       dpo_loss_v.mean().detach().item(), 
+                    "dpo_loss_a":       dpo_loss_a.mean().detach().item(), 
+                    "sft_loss_v":       sft_loss_v.mean().detach().item(), 
+                    "sft_loss_a":       sft_loss_a.mean().detach().item(), 
+                    'weighted_dpo_loss_v': (dpo_weight_v * dpo_loss_v).mean().detach().item(),
+                    'weighted_sft_loss_v': (sft_weight_v * sft_loss_v).mean().detach().item(),
+                    'weighted_dpo_loss_a': (dpo_weight_a * dpo_loss_a).mean().detach().item(),
+                    'weighted_sft_loss_a': (sft_weight_a * sft_loss_a).mean().detach().item(),
+                    'v_model_diff':     info['v_model_diff'].mean().detach().item(),
+                    'v_model_losses_w': info['v_model_losses_w'].mean().detach().item(),
+                    'v_model_losses_l': info['v_model_losses_l'].mean().detach().item(),
+                    'a_model_diff':     info['a_model_diff'].mean().detach().item(),
+                    'a_model_losses_w': info['a_model_losses_w'].mean().detach().item(),
+                    'a_model_losses_l': info['a_model_losses_l'].mean().detach().item(),
+                    'v_ref_diff':       info['v_ref_diff'].mean().detach().item(),
+                    'v_ref_losses_w':   info['v_ref_losses_w'].mean().detach().item(),
+                    'v_ref_losses_l':   info['v_ref_losses_l'].mean().detach().item(),
+                    'a_ref_diff':       info['a_ref_diff'].mean().detach().item(),
+                    'a_ref_losses_w':   info['a_ref_losses_w'].mean().detach().item(),
+                    'a_ref_losses_l':   info['a_ref_losses_l'].mean().detach().item(),
                     "lr":               lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             accelerator.wait_for_everyone()
@@ -746,7 +784,20 @@ def main(args, accelerator):
     #                     ema = ema,
     #                     transformer_training_parameters = transformer_training_parameters,
     #                     ckpt_idx = int(global_step // args.checkpointing_steps - 1))
-
+    # # log_validation(
+    # #     config=args.validation,
+    # #     video_config=video_config,
+    # #     audio_config=audio_config,
+    # #     fusion_model=fusion_model,
+    # #     ema = ema,
+    # #     transformer_training_parameters = transformer_training_parameters,
+    # #     vae_model_video=vae_model_video,
+    # #     vae_model_audio=vae_model_audio,
+    # #     text_model=text_model,
+    # #     infer_dtype=infer_dtype,
+    # #     accelerator=accelerator,
+    # #     global_step=global_step
+    # # )
     accelerator.wait_for_everyone()
     accelerator.end_training()
 
