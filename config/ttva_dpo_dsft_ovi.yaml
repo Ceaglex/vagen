@@ -6,15 +6,18 @@ hub_token     : null
 hub_model_id  : null
 # For logging setting
 tracker_name  : null
+ovi_mode    : i2v # t2v i2v MODIFIED
 dynamic_mode: DPO
-output_dir  : ./log/ovi_fusion_dpo_15_11_w1 ####################### dynamicmode_lr_beta_weight
+output_dir  : ./log/avsync_ovi_i2v_dpo_15_11 ####################### dynamicmode_lr_beta_weight
 report_to   : wandb   
 ckpt_subdir : checkpoints
 logging_subdir: logging
+dpo_loss_weight: 1
+sft_loss_weight: 1
 wandb_init_args:
-  mode      : "online" # online / offline   
+  mode      : "online" 
   project   : "Ovi"
-  name      : "ovi_fusion_dpo_15_11w1"     #######################
+  name      : "avsync_ovi_i2v_dpo_15_11"     #######################
   tags      : null
   notes     : ""
 
@@ -23,18 +26,19 @@ ckpt_dir: "/home/chengxin/chengxin/Ovi/ckpts"                                   
 fusion_checkpoint_path: "/home/chengxin/chengxin/Ovi/ckpts/Ovi/model.safetensors"  # Fusion model checkpoint
 
 
-# Ovi model trainable setting
+# Ovi model trainable setting MODIFIED
 lora_config:
   lora_load_path: null
   use_lora: true
-  rank: 256  
+  rank: 128  
   lora_alpha: 64
-  lora_modules: ['k_fusion', 'v_fusion']
+  lora_modules: [ 
+    'k_fusion', 'v_fusion',
+    'self_attn.q', 'self_attn.k', 'self_attn.v', 'self_attn.o', 
+    'cross_attn.q', 'cross_attn.k', 'cross_attn.v', 'cross_attn.o'
+  ]
 block_config:
   train_va: false   
-  # audio_trainable_blocks: [19, 20, 21, 22, 23]  # 24 blocks in total
-  # video_trainable_blocks: [25, 26, 27, 28, 29]  # 30 blocks in total
-
 optimize_params : null # ["fusion"] 
 
 
@@ -46,7 +50,7 @@ mixed_precision : bf16   # Options: ["null", "fp16", "bf16"]
 allow_tf32      : false 
 # matmul_precision  : medium 
 # Steps and saving
-num_train_epochs        : 10     
+num_train_epochs        : 8     
 max_train_steps         : null 
 checkpointing_steps     : 800    
 checkpoints_total_limit : 40 
@@ -57,7 +61,7 @@ gradient_accumulation_steps : 1
 learning_rate   : 1e-5             
 dpo_beta : 1e-1                              
 scale_lr        : false     
-lr_scheduler    : "cosine_with_restarts"  # Options: ["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"]
+lr_scheduler    : "cosine_with_restarts"  
 lr_warmup_steps : 1000
 lr_num_cycles   : 1
 lr_power        : 1.0
@@ -70,7 +74,7 @@ find_unused_parameters  : true
 
 
 # Optimizer
-optimizer       : "adam"  # Options: ["adam", "adamw", "prodigy"]
+optimizer       : "adam" 
 use_8bit_adam   : false    
 adam_beta1      : 0.9
 adam_beta2      : 0.95
@@ -90,7 +94,7 @@ prodigy_safeguard_warmup    : false
 
 
 hy_dataloader:
-  video_index_file: "/home/chengxin/chengxin/vagen/data/ttva/avsync_train.json"  
+  video_index_file: "/home/chengxin/chengxin/vagen/data/ttva/avsync_train_easy.json"    # MODIFIED
   batch_size : ${train_batch_size_local}  
   # dataset setting
   load_mode: "video_audio_dpo" # video_audio_dpo  video_audio
@@ -102,7 +106,6 @@ hy_dataloader:
   target_duration: 5.0      
   uncond_prob: 0.0          
   weights: [0,0,10]         ##########["mask_video", "mask_audio", "shift"]  ############# w1 [0,0,10]   w2 [10,10,10] 
-  # # # # negetive_prompt: ""       
   # DataLoader parameters
   shuffle: true               
   num_workers: ${num_workers}
@@ -118,12 +121,13 @@ validation:
     num_train_timesteps: 1000
   
   eval_steps: ${checkpointing_steps}
-  prompt_index_file: /home/chengxin/chengxin/vagen/data/ttva/avsync_test.json    
+  prompt_index_file: /home/chengxin/chengxin/vagen/data/ttva/avsync_test_easy.json    # MODIFIED
+  mode: ${ovi_mode}
   batch_size : 1
   num_va_per_prompt: 1
   seed: ${seed}
   slg_layer: 11
-  num_inference_steps: 50      
+  num_inference_steps: 30                                                             # MODIFIED
                        
   v_negative_prompt : "jitter, bad hands, blur, distortion"
   video_size: ${hy_dataloader.video_size}

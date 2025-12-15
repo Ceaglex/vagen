@@ -6,37 +6,25 @@ from tqdm.auto import tqdm
 import copy
 import soundfile as sf
 import json
-import time
 
 import random
 import torch
 import torch.nn.functional as F
-import torchaudio
-import torch.nn.functional as nn_func
-from torch.cuda.amp import autocast
 import gc
-from accelerate import Accelerator, DistributedType
 from accelerate.logging import get_logger
 
 from transformers import SpeechT5HifiGan
-from diffusers.models.auto_model import AutoModel
-from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
+# from diffusers.models.auto_model import AutoModel
+# from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params, free_memory
-from diffusers.utils import check_min_version
-from diffusers.utils.state_dict_utils import convert_unet_state_dict_to_peft
-from diffusers.utils.export_utils import export_to_video
 from diffusers.utils.import_utils import is_wandb_available
-from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
-from diffusers.utils.torch_utils import is_compiled_module
-from diffusers.utils.torch_utils import randn_tensor
 from peft import LoraConfig, PeftModel, get_peft_model
 
 from worker.base import prepare_config, prepare_everything
 from dataset.hy_video_audio import build_video_loader
-from utils.va_processing import add_audio_to_video, save_video
-from utils.text_encoding import get_t5_prompt_embeds, encode_prompt, encode_prompt_sd, encode_duration_sd, prepare_extra_step_kwargs
-from utils.optimizer import get_optimizer, init_weights, init_class, load_weights
+from utils.va_processing import save_video
+from utils.optimizer import get_optimizer
 from utils.model_loading import (
     init_fusion_score_model_ovi, 
     init_text_model, 
@@ -45,12 +33,48 @@ from utils.model_loading import (
     load_fusion_checkpoint
 )
 from utils.fm_solvers import FlowUniPCMultistepScheduler
-from utils.va_processing import snap_hw_to_multiple_of_32
+from utils.va_processing import snap_hw_to_multiple_of_32, preprocess_image_tensor
 from model.ema import EMAModuleWrapper
 
 logger = get_logger(__name__)
 
 
+
+
+
+def calculate_dynamic_weights(info, dynamic_mode = None):
+
+    v_diff = info['v_model_diff']  # Tensor (N,)
+    a_diff = info['a_model_diff']  # Tensor (N,)
+
+    if dynamic_mode == 'DPO_SFT':
+        dpo_weight_v = torch.ones_like(info['v_model_diff'])
+        sft_weight_v = torch.ones_like(info['v_model_diff'])
+        dpo_weight_a = torch.ones_like(info['a_model_diff'])
+        sft_weight_a = torch.ones_like(info['a_model_diff'])
+
+    elif dynamic_mode == 'DPO':
+        dpo_weight_v = torch.ones_like(info['v_model_diff'])
+        sft_weight_v = torch.zeros_like(info['v_model_diff'])
+        dpo_weight_a = torch.ones_like(info['a_model_diff'])
+        sft_weight_a = torch.zeros_like(info['a_model_diff'])
+
+    elif dynamic_mode == 'SFT':
+        dpo_weight_v = torch.zeros_like(info['v_model_diff'])
+        sft_weight_v = torch.ones_like(info['v_model_diff'])
+        dpo_weight_a = torch.zeros_like(info['a_model_diff'])
+        sft_weight_a = torch.ones_like(info['a_model_diff'])
+
+    # dpo_weight_v = torch.ge(v_diff, 0).float() 
+    # sft_weight_v = 1 - dpo_weight_v
+    # sft_weight_v = torch.ones(info['v_model_diff'])
+    
+
+    # dpo_weight_a = torch.ge(a_diff, 0).float()
+    # sft_weight_a = 1 - dpo_weight_a
+    # sft_weight_a = torch.ones(info['a_model_diff'])
+    
+    return dpo_weight_v, dpo_weight_a, sft_weight_v, sft_weight_a
 
 
 def log_validation(
@@ -79,10 +103,6 @@ def log_validation(
     os.makedirs(output_dir, exist_ok=True)
     print(f"Saving path :{output_dir}")
     
-    # Initialize generators
-    v_generator = torch.Generator(accelerator.device).manual_seed(config.seed) if config.seed is not None else None
-    a_generator = torch.Generator(accelerator.device).manual_seed(config.seed) if config.seed is not None else None
-    
     # Initialize schedulers
     scheduler_video = FlowUniPCMultistepScheduler(num_train_timesteps=config.scheduler.num_train_timesteps, shift=1, use_dynamic_shifting=False)
     scheduler_audio = FlowUniPCMultistepScheduler(num_train_timesteps=config.scheduler.num_train_timesteps, shift=1, use_dynamic_shifting=False)
@@ -99,14 +119,20 @@ def log_validation(
     v_guidance_scale = config.v_guidance_scale
     a_guidance_scale = config.a_guidance_scale
     slg_layer = config.slg_layer
+    mode = config.mode
     do_classifier_free_guidance = (a_guidance_scale > 1.0) or (v_guidance_scale > 1.0)
     fusion_model.eval()
     # TODO: Add ema
     fusion_model.module.set_adapter("learner") if hasattr(fusion_model, "module") else fusion_model.set_adapter("learner")
     ema.copy_ema_to(transformer_training_parameters, store_temp=True)
 
+
     with torch.no_grad():
         for start_idx in range(0, len(data), batch_size):
+            # Each sample Same Seed
+            v_generator = torch.Generator(accelerator.device).manual_seed(config.seed) if config.seed is not None else None
+            a_generator = torch.Generator(accelerator.device).manual_seed(config.seed) if config.seed is not None else None
+
             end_idx = min(len(data), start_idx + batch_size)
             paths = [data[i][0] for i in range(start_idx, end_idx)]
             infos = [data[i][1] for i in range(start_idx, end_idx)]
@@ -118,6 +144,17 @@ def log_validation(
             snap_area = max(video_h * video_w, 720 * 720)
             video_h, video_w = snap_hw_to_multiple_of_32(video_h, video_w, area=snap_area)
             video_latent_h, video_latent_w = video_h // 16, video_w // 16
+
+            if mode == 'i2v':
+                latents_images = []
+                for info in infos:
+                    image_path = info['image_path']
+                    first_frame = preprocess_image_tensor(image_path, accelerator.device, infer_dtype)
+                    latents_image = vae_model_video.wrapped_encode(first_frame[:, :, None]).to(infer_dtype).squeeze(0) # c 1 h w 
+                    latents_images.append(latents_image)
+                    video_latent_h, video_latent_w = latents_image.shape[2], latents_image.shape[3]   # 只能处理batchsize = 1的情况，因为batchsize>1时候，video_latent_h和video_latent_w可能不一样
+                    
+
                     
             audio_latent_channel = audio_config['in_dim'] 
             video_latent_channel = video_config['in_dim'] 
@@ -140,6 +177,7 @@ def log_validation(
                             device=accelerator.device, dtype=infer_dtype, generator=a_generator)] * batch_size
             audio_noise = torch.stack(audio_noise, dim = 0)
 
+
             # Calculate sequence lengths
             max_seq_len_audio = audio_noise.shape[-2]
             patch_size = fusion_model.module.video_model.patch_size if hasattr(fusion_model, "module") else fusion_model.video_model.patch_size
@@ -155,6 +193,12 @@ def log_validation(
 
                 for i, (t_v, t_a) in tqdm(enumerate(zip(timesteps_video, timesteps_audio)), 
                                         total=len(timesteps_video), desc="Sampling"):
+
+                    if mode == 'i2v':
+                        for i in range(batch_size):
+                            video_noise[i, :, :1] = latents_images[i]
+
+
                     # print(video_noise.mean(), video_noise[0], audio_noise.mean(), audio_noise[0])
                     timestep_input = torch.full((batch_size,), t_v, device=accelerator.device)
                             
@@ -164,7 +208,7 @@ def log_validation(
                         'vid_context': text_embeddings_video_pos,
                         'vid_seq_len': max_seq_len_video,
                         'audio_seq_len': max_seq_len_audio,
-                        'first_frame_is_clean': False,
+                        'first_frame_is_clean': True if mode == 'i2v' else False,
                     }
                     pred_video_guided, pred_audio_guided = fusion_model(
                         vid=[i for i in video_noise],
@@ -183,7 +227,7 @@ def log_validation(
                             'vid_context': [text_embeddings_video_neg for _ in range(batch_size)],
                             'vid_seq_len': max_seq_len_video,
                             'audio_seq_len': max_seq_len_audio,
-                            'first_frame_is_clean': False,
+                            'first_frame_is_clean': True if mode == 'i2v' else False,
                             'slg_layer': slg_layer
                         }  
                         pred_vid_neg, pred_audio_neg = fusion_model(
@@ -202,7 +246,6 @@ def log_validation(
                     pred_video_guided = torch.stack(pred_video_guided, dim = 0)
                     pred_audio_guided = torch.stack(pred_audio_guided, dim = 0)
 
-
                     video_noise = scheduler_video.step(pred_video_guided, t_v, video_noise, return_dict=False)[0]
                     audio_noise = scheduler_audio.step(pred_audio_guided, t_a, audio_noise, return_dict=False)[0]
 
@@ -212,6 +255,9 @@ def log_validation(
             generated_audio = generated_audio.cpu().float().numpy()
                             
             # Decode video
+            if mode == 'i2v':
+                for i in range(batch_size):
+                    video_noise[i, :, :1] = latents_images[i]
             video_latents_for_vae = video_noise    # 1, c, f, h, w
             generated_video = vae_model_video.wrapped_decode(video_latents_for_vae)
             generated_video = generated_video.cpu().float().numpy()  # c, f, h, w
@@ -219,7 +265,7 @@ def log_validation(
             # Save results
             for i in range(batch_size):
                 name = paths[i].split('/')[-1].replace('.mp4', '')
-                v_path = f"{output_dir}/{name}.mp4"                  
+                v_path = f"{output_dir}/{name}.mp4"                            
                 save_video(v_path, generated_video[i], generated_audio[i][0], fps=config.data_info.video_info.fps, sample_rate=config.data_info.audio_info.sr)
 
             if sync_times != 0: 
@@ -227,7 +273,7 @@ def log_validation(
                 accelerator.wait_for_everyone()
                 print(accelerator.device, sync_times)
 
-        
+                
         accelerator.wait_for_everyone()
         # TODO Add EMA
         ema.copy_temp_to(transformer_training_parameters)
@@ -247,9 +293,12 @@ def training_step(batch,
                   vae_model_audio,
                   text_model,
                   accelerator, 
+                  dpo_beta,
+                  mode,
                   load_dtype):
 
-    text_prompt = batch['v_prompt']  # Use video prompt as main prompt
+    # TODO: Check DPO Loss and dataset W-L data pair order
+    text_prompt = batch['v_prompt']  
     text_prompt = [f"{batch['v_prompt'][i]} <AUDCAP>{batch['a_prompt'][i]}<ENDAUDCAP>" for i in range(len(batch['v_prompt']))] # Use video caption as the main prompt
     waveform = batch['audio_waveform'][:,0,:]
     video_pixel = batch['video_pixel']
@@ -257,45 +306,61 @@ def training_step(batch,
     # video_pixel_lose = batch['video_pixel_lose']
     # waveform = torch.concat([waveform, waveform_lose], dim = 0)
     # video_pixel = torch.concat([video_pixel, video_pixel_lose], dim = 0)
-    # group_size = len(text_prompt)
-    # batch_size = group_size * 2
-    batch_size = len(text_prompt)
-
-
+    group_size = len(text_prompt)
+    batch_size = group_size
+    first_frame_is_clean = True if mode == 'i2v' else False
 
     with torch.no_grad():
         # Encode text
         text_embeddings = text_model(text_prompt, text_model.device)
-        text_embeddings = [emb.to(load_dtype).to(accelerator.device) for emb in text_embeddings]
+        text_embeddings = [emb.to(load_dtype).to(accelerator.device).detach() for emb in text_embeddings] 
+        # text_embeddings = [emb.to(load_dtype).to(accelerator.device).detach() for emb_ in text_embeddings for emb in [copy.deepcopy(emb_), copy.deepcopy(emb_)]] # DPO, 2 prompts
 
         # Encode video and audio to latents
         v_latents = vae_model_video.wrapped_encode(video_pixel.to(load_dtype)).to(load_dtype)
         a_latents = vae_model_audio.wrapped_encode(waveform.to(torch.float32)).transpose(1, 2).to(load_dtype)
 
-        # # # Check Latent
-        # audio_latents_for_vae = a_latents.transpose(1, 2)  # 1, c, l
-        # generated_audio = vae_model_audio.wrapped_decode(audio_latents_for_vae)
-        # generated_audio = generated_audio.cpu().float().numpy()         
-        # video_latents_for_vae = v_latents    # 1, c, f, h, w
-        # generated_video = vae_model_video.wrapped_decode(video_latents_for_vae)
-        # generated_video = generated_video.cpu().float().numpy()  # c, f, h, w
-        # for i in range(batch_size):
-        #     v_path = f"test{i}.mp4"                
-        #     save_video(v_path, generated_video[i], generated_audio[i][0], fps=24, sample_rate=16000)
-            
-        # Add noise
-        v_noise = torch.randn_like(v_latents).detach()
-        a_noise = torch.randn_like(a_latents).detach()
-        
-        # Sample timesteps
-        timesteps = torch.randint(0, 1000, (batch_size,), dtype=torch.int64, device=accelerator.device).detach()
+        # # # # # Check Latent
+        # # # audio_latents_for_vae = a_latents.transpose(1, 2)  # 1, c, l
+        # # # generated_audio = vae_model_audio.wrapped_decode(audio_latents_for_vae)
+        # # # generated_audio = generated_audio.cpu().float().numpy()         
+        # # # video_latents_for_vae = v_latents    # 1, c, f, h, w
+        # # # generated_video = vae_model_video.wrapped_decode(video_latents_for_vae)
+        # # # generated_video = generated_video.cpu().float().numpy()  # c, f, h, w
+        # # # for i in range(batch_size):
+        # # #     v_path = f"test{i}.mp4"                
+        # # #     save_video(v_path, generated_video[i], generated_audio[i][0], fps=24, sample_rate=16000)
+
+        # # Add noise
+        v_noise = torch.randn_like(v_latents[:group_size]).detach()
+        a_noise = torch.randn_like(a_latents[:group_size]).detach()
+        # v_noise = torch.concat([v_noise, v_noise], dim = 0)
+        # a_noise = torch.concat([a_noise, a_noise], dim = 0)
+        if mode == 'i2v':
+            v_noise[:,:,:1] = v_latents[:,:,:1]
+
+        # # Sample timesteps
+        timesteps = torch.randint(0, 1000, (group_size,), dtype=torch.int64, device=accelerator.device).detach()
+        # timesteps = torch.concat([timesteps, timesteps], dim = 0)
+
         # Apply flow matching noise schedule
         t_v = (timesteps / 1000).to(v_latents.dtype).view(-1, *([1] * (v_latents.ndim - 1)))
         t_a = (timesteps / 1000).to(a_latents.dtype).view(-1, *([1] * (a_latents.ndim - 1)))
         
         v_latent_model_input = (1 - t_v) * v_latents + t_v * v_noise
         a_latent_model_input = (1 - t_a) * a_latents + t_a * a_noise
-        
+
+        # # # # # Check Noise
+        # # # audio_latents_for_vae = a_latents.transpose(1, 2)  # 1, c, l
+        # # # generated_audio = vae_model_audio.wrapped_decode(audio_latents_for_vae)
+        # # # generated_audio = generated_audio.cpu().float().numpy()         
+        # # # video_latents_for_vae = v_latent_model_input    # 1, c, f, h, w
+        # # # generated_video = vae_model_video.wrapped_decode(video_latents_for_vae)
+        # # # generated_video = generated_video.cpu().float().numpy()  # c, f, h, w
+        # # # for i in range(batch_size):
+        # # #     v_path = f"test{i}.mp4"                
+        # # #     save_video(v_path, generated_video[i], generated_audio[i][0], fps=24, sample_rate=16000)
+
         # Calculate targets (flow matching targets)
         v_target = v_noise - v_latents
         a_target = a_noise - a_latents
@@ -317,11 +382,12 @@ def training_step(batch,
         #     audio_context=text_embeddings,
         #     vid_seq_len=max_seq_len_video,
         #     audio_seq_len=max_seq_len_audio,
-        #     first_frame_is_clean=False
+        #     first_frame_is_clean=first_frame_is_clean
         # )
         # pred_vid_ref = torch.stack(pred_vid_ref, dim = 0).detach()
         # pred_audio_ref = torch.stack(pred_audio_ref, dim = 0).detach()
-
+        # if mode == 'i2v':
+        #     pred_vid_ref[:,:,:1] = v_target[:,:,:1]
 
 
     # Forward pass through fusion model
@@ -334,20 +400,22 @@ def training_step(batch,
         audio_context=text_embeddings,
         vid_seq_len=max_seq_len_video,
         audio_seq_len=max_seq_len_audio,
-        first_frame_is_clean=False
+        first_frame_is_clean=first_frame_is_clean
     )
     pred_vid = torch.stack(pred_vid, dim = 0)
     pred_audio = torch.stack(pred_audio, dim = 0)
+    if mode == 'i2v':
+        pred_vid[:,:,:1] = v_target[:,:,:1]
 
-    # v_model_losses = (pred_vid.float() - v_target.float()).pow(2).mean(dim=[1, 2, 3, 4])
+
+    v_model_losses = (pred_vid.float() - v_target.float()).pow(2).mean(dim=[1, 2, 3, 4])
+    a_model_losses = (pred_audio.float() - a_target.float()).pow(2).mean(dim=[1, 2])
+
     # v_model_losses_w, v_model_losses_l = v_model_losses.chunk(2)
     # v_model_diff = v_model_losses_w - v_model_losses_l
-
-    # a_model_losses = (pred_audio.float() - a_target.float()).pow(2).mean(dim=[1, 2])
     # a_model_losses_w, a_model_losses_l = a_model_losses.chunk(2)    
     # a_model_diff = a_model_losses_w - a_model_losses_l
     
-
     # with torch.no_grad():
     #     v_ref_losses = (pred_vid_ref.float() - v_target.float()).pow(2).mean(dim=[1, 2, 3, 4])
     #     v_ref_losses_w, v_ref_losses_l = v_ref_losses.chunk(2)
@@ -359,33 +427,21 @@ def training_step(batch,
 
 
     # scale_term = -0.5 * dpo_beta
-
-    # v_inside_term = scale_term * (v_model_diff - v_ref_diff)
-    # v_dpo_loss = -F.logsigmoid(v_inside_term).mean()
-
+    # v_inside_term = scale_term * (v_model_diff - v_ref_diff)   # v_model_diff - v_ref_diff 越负越好， v_inside_term越大越好
+    # v_dpo_loss = -F.logsigmoid(v_inside_term)
     # a_inside_term = scale_term * (a_model_diff - a_ref_diff)
-    # a_dpo_loss = -F.logsigmoid(a_inside_term).mean()
+    # a_dpo_loss = -F.logsigmoid(a_inside_term)
 
-    # info = {
-    #     'v_model_diff':v_model_diff.mean().detach().item(),
-    #     'v_model_losses_w':v_model_losses_w.mean().detach().item(),
-    #     'v_model_losses_l':v_model_losses_l.mean().detach().item(),
-    #     'a_model_diff':a_model_diff.mean().detach().item(),
-    #     'a_model_losses_w':a_model_losses_w.mean().detach().item(),
-    #     'a_model_losses_l':a_model_losses_l.mean().detach().item(),
-    #     'v_ref_diff':v_ref_diff.mean().detach().item(),
-    #     'v_ref_losses_w':v_ref_losses_w.mean().detach().item(),
-    #     'v_ref_losses_l':v_ref_losses_l.mean().detach().item(),
-    #     'a_ref_diff':a_ref_diff.mean().detach().item(),
-    #     'a_ref_losses_w':a_ref_losses_w.mean().detach().item(),
-    #     'a_ref_losses_l':a_ref_losses_l.mean().detach().item(),
-    # }
-    # Calculate SFT MSE losses
-    loss_v = nn_func.mse_loss(pred_vid.float(), v_target.float(), reduction="mean")
-    loss_a = nn_func.mse_loss(pred_audio.float(), a_target.float(), reduction="mean")
+    info = {
+        'sft_loss_v': v_model_losses,
+        'sft_loss_a':a_model_losses
+    }
+
+    v_sft_loss = v_model_losses
+    a_sft_loss = a_model_losses
 
 
-    return loss_v, loss_a
+    return v_sft_loss, a_sft_loss, info
 
 
 
@@ -414,7 +470,7 @@ def checkpointing_step(model, accelerator, logger, args,
 
     accelerator.save_state()
     lora_save_path = f"{ckpt_dir}/checkpoint_{ckpt_idx}"
-    model.module.save_pretrained(lora_save_path) if hasattr(model, "module") else model.save_pretrained(lora_save_path)
+    model.module.base_model.save_pretrained(lora_save_path) if hasattr(model, "module") else model.base_model.save_pretrained(lora_save_path)
     logger.info(f"Saved state to {ckpt_dir}")
 
     ema.copy_temp_to(transformer_training_parameters)
@@ -493,6 +549,7 @@ def main(args, accelerator):
             lora_dropout=0.1,
             bias="none",)
 
+        # TODO: Set ref model eval() or update ref model on times
         if hasattr(args.lora_config, 'lora_load_path') and args.lora_config.lora_load_path:
             print(f"Loading LoRA weights from {args.lora_config.lora_load_path}")
             fusion_model = PeftModel.from_pretrained(
@@ -500,7 +557,11 @@ def main(args, accelerator):
                 args.lora_config.lora_load_path,
                 adapter_name="learner"
             )
+            fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="ref")
         else:
+            torch.manual_seed(args.seed); random.seed(args.seed)
+            fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="ref")
+            torch.manual_seed(args.seed); random.seed(args.seed)
             fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="learner")
 
         fusion_model.set_adapter("learner")
@@ -601,14 +662,14 @@ def main(args, accelerator):
     total_batch_size = args.train_batch_size_local * accelerator.num_processes * args.gradient_accumulation_steps
     num_trainable_parameters = sum(param.numel() for model in params_to_optimize for param in model["params"])
 
-    logger.info("***** Running training *****")
-    logger.info(f"  Num trainable parameters = {num_trainable_parameters}")
-    logger.info(f"  Num batches each epoch = {len(train_dataloader)}")
-    logger.info(f"  Num epochs = {args.num_train_epochs}")
-    logger.info(f"  Instantaneous batch size per device = {args.train_batch_size_local}")
-    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
-    logger.info(f"  Gradient accumulation steps = {args.gradient_accumulation_steps}")
-    logger.info(f"  Total optimization steps = {args.max_train_steps}")
+    print("***** Running training *****")
+    print(f"  Num trainable parameters = {num_trainable_parameters}")
+    print(f"  Num batches each epoch = {len(train_dataloader)}")
+    print(f"  Num epochs = {args.num_train_epochs}")
+    print(f"  Instantaneous batch size per device = {args.train_batch_size_local}")
+    print(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
+    print(f"  Gradient accumulation steps = {args.gradient_accumulation_steps}")
+    print(f"  Total optimization steps = {args.max_train_steps}")
     global_step = 0
     first_epoch = 0
     
@@ -645,7 +706,7 @@ def main(args, accelerator):
     for epoch in range(first_epoch, args.num_train_epochs):
         fusion_model.train()
         for step, batch in enumerate(train_dataloader):
-            
+            # fusion_model.module.base_model.save_pretrained('log') if hasattr(fusion_model, "module") else fusion_model.base_model.save_pretrained('log')
             if global_step % args.validation.eval_steps == 0 and global_step != 0:
                 log_validation(
                     config=args.validation,
@@ -666,15 +727,24 @@ def main(args, accelerator):
             # TODO: Add ref model update
             models_to_accumulate = [fusion_model]
             with accelerator.accumulate(models_to_accumulate):
-                loss_v, loss_a = training_step(batch, 
-                                    fusion_model=fusion_model,
-                                    # fusion_model_ref=fusion_model_ref,
-                                    vae_model_video=vae_model_video,
-                                    vae_model_audio=vae_model_audio,
-                                    text_model=text_model,
-                                    accelerator=accelerator, 
-                                    load_dtype=weight_dtype)
-                accelerator.backward(loss_v + loss_a)
+                sft_loss_v, sft_loss_a, info = training_step(batch, 
+                                                            fusion_model=fusion_model,
+                                                            mode=args.ovi_mode,
+                                                            # fusion_model_ref=fusion_model_ref,
+                                                            vae_model_video=vae_model_video,
+                                                            vae_model_audio=vae_model_audio,
+                                                            text_model=text_model,
+                                                            accelerator=accelerator, 
+                                                            dpo_beta=args.dpo_beta,
+                                                            load_dtype=weight_dtype)
+
+                # dpo_weight_v, dpo_weight_a, sft_weight_v, sft_weight_a = calculate_dynamic_weights(info, args.dynamic_mode)
+                # dpo_weight_v, dpo_weight_a = args.dpo_loss_weight * dpo_weight_v, args.dpo_loss_weight * dpo_weight_a
+                # sft_weight_v, sft_weight_a = args.sft_loss_weight * sft_weight_v, args.sft_loss_weight * sft_weight_a
+                # loss = dpo_weight_v * dpo_loss_v + dpo_weight_a * dpo_loss_a + sft_weight_v * sft_loss_v + sft_weight_a * sft_loss_a
+                loss = sft_loss_v + sft_loss_a
+                loss = loss.mean()
+                accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     params_to_clip = fusion_model.parameters()
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
@@ -697,9 +767,27 @@ def main(args, accelerator):
                                        transformer_training_parameters = transformer_training_parameters,
                                        ckpt_idx = int(global_step // args.checkpointing_steps - 1))
 
-            logs = {"loss":             loss_v.detach().item() + loss_a.detach().item(),
-                    "loss_v":           loss_v.detach().item(), 
-                    "loss_a":           loss_a.detach().item(), 
+            logs = {"loss":             loss.detach().item(),
+                    "sft_loss_v":       sft_loss_v.mean().detach().item(), 
+                    "sft_loss_a":       sft_loss_a.mean().detach().item(), 
+                    # "dpo_loss_v":       dpo_loss_v.mean().detach().item(), 
+                    # "dpo_loss_a":       dpo_loss_a.mean().detach().item(), 
+                    # 'weighted_dpo_loss_v': (dpo_weight_v * dpo_loss_v).mean().detach().item(),
+                    # 'weighted_sft_loss_v': (sft_weight_v * sft_loss_v).mean().detach().item(),
+                    # 'weighted_dpo_loss_a': (dpo_weight_a * dpo_loss_a).mean().detach().item(),
+                    # 'weighted_sft_loss_a': (sft_weight_a * sft_loss_a).mean().detach().item(),
+                    # 'v_model_diff':     info['v_model_diff'].mean().detach().item(),
+                    # 'v_model_losses_w': info['v_model_losses_w'].mean().detach().item(),
+                    # 'v_model_losses_l': info['v_model_losses_l'].mean().detach().item(),
+                    # 'a_model_diff':     info['a_model_diff'].mean().detach().item(),
+                    # 'a_model_losses_w': info['a_model_losses_w'].mean().detach().item(),
+                    # 'a_model_losses_l': info['a_model_losses_l'].mean().detach().item(),
+                    # 'v_ref_diff':       info['v_ref_diff'].mean().detach().item(),
+                    # 'v_ref_losses_w':   info['v_ref_losses_w'].mean().detach().item(),
+                    # 'v_ref_losses_l':   info['v_ref_losses_l'].mean().detach().item(),
+                    # 'a_ref_diff':       info['a_ref_diff'].mean().detach().item(),
+                    # 'a_ref_losses_w':   info['a_ref_losses_w'].mean().detach().item(),
+                    # 'a_ref_losses_l':   info['a_ref_losses_l'].mean().detach().item(),
                     "lr":               lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             accelerator.wait_for_everyone()
@@ -709,14 +797,27 @@ def main(args, accelerator):
 
     # Save the lora layers
     logger.info("=> Saving the trained model ...")
-    # checkpointing_step(model = fusion_model,
-    #                     accelerator = accelerator, 
-    #                     logger = logger, 
-    #                     args = args, 
-    #                     ema = ema,
-    #                     transformer_training_parameters = transformer_training_parameters,
-    #                     ckpt_idx = int(global_step // args.checkpointing_steps - 1))
-
+    checkpointing_step(model = fusion_model,
+                        accelerator = accelerator, 
+                        logger = logger, 
+                        args = args, 
+                        ema = ema,
+                        transformer_training_parameters = transformer_training_parameters,
+                        ckpt_idx = int(global_step // args.checkpointing_steps - 1))
+    log_validation(
+        config=args.validation,
+        video_config=video_config,
+        audio_config=audio_config,
+        fusion_model=fusion_model,
+        ema = ema,
+        transformer_training_parameters = transformer_training_parameters,
+        vae_model_video=vae_model_video,
+        vae_model_audio=vae_model_audio,
+        text_model=text_model,
+        infer_dtype=infer_dtype,
+        accelerator=accelerator,
+        global_step=global_step
+    )
     accelerator.wait_for_everyone()
     accelerator.end_training()
 

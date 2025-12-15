@@ -6,6 +6,9 @@ from diffusers.models import AutoencoderKL
 import torchaudio
 from tqdm import tqdm
 from moviepy import VideoFileClip, AudioFileClip
+import re
+import cv2
+from PIL import Image
 
 import tempfile
 from typing import Optional
@@ -14,6 +17,89 @@ from moviepy import ImageSequenceClip, AudioFileClip
 from scipy.io import wavfile
 import math
 import random
+
+
+
+
+def preprocess_image_tensor(image_path, device, target_dtype, h_w_multiple_of=32, resize_total_area=720*720):
+    """Preprocess video data into standardized tensor format and (optionally) resize area."""
+    def _parse_area(val):
+        if val is None:
+            return None
+        if isinstance(val, (int, float)):
+            return int(val)
+        if isinstance(val, (tuple, list)) and len(val) == 2:
+            return int(val[0]) * int(val[1])
+        if isinstance(val, str):
+            m = re.match(r"\s*(\d+)\s*[x\*\s]\s*(\d+)\s*$", val, flags=re.IGNORECASE)
+            if m:
+                return int(m.group(1)) * int(m.group(2))
+            if val.strip().isdigit():
+                return int(val.strip())
+        raise ValueError(f"resize_total_area={val!r} is not a valid area or WxH.")
+
+    def _best_hw_for_area(h, w, area_target, multiple):
+        if area_target <= 0:
+            return h, w
+        ratio_wh = w / float(h)
+        area_unit = multiple * multiple
+        tgt_units = max(1, area_target // area_unit)
+        p0 = max(1, int(round(np.sqrt(tgt_units / max(ratio_wh, 1e-8)))))
+        candidates = []
+        for dp in range(-3, 4):
+            p = max(1, p0 + dp)
+            q = max(1, int(round(p * ratio_wh)))
+            H = p * multiple
+            W = q * multiple
+            candidates.append((H, W))
+        scale = np.sqrt(area_target / (h * float(w)))
+        H_sc = max(multiple, int(round(h * scale / multiple)) * multiple)
+        W_sc = max(multiple, int(round(w * scale / multiple)) * multiple)
+        candidates.append((H_sc, W_sc))
+        def score(HW):
+            H, W = HW
+            area = H * W
+            return (abs(area - area_target), abs((W / max(H, 1e-8)) - ratio_wh))
+        H_best, W_best = min(candidates, key=score)
+        return H_best, W_best
+
+    if isinstance(image_path, str):
+        image = cv2.imread(image_path)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    else:
+        assert isinstance(image_path, Image.Image)
+        if image_path.mode != "RGB":
+            image_path = image_path.convert("RGB")
+        image = np.array(image_path)
+
+    image = image.transpose(2, 0, 1)
+    image = image.astype(np.float32) / 255.0
+
+    image_tensor = torch.from_numpy(image).float().to(device, dtype=target_dtype).unsqueeze(0) ## b c h w
+    image_tensor = image_tensor * 2.0 - 1.0 ## -1 to 1
+
+    _, c, h, w = image_tensor.shape
+    area_target = _parse_area(resize_total_area)
+    if area_target is not None:
+        target_h, target_w = _best_hw_for_area(h, w, area_target, h_w_multiple_of)
+    else:
+        target_h = (h // h_w_multiple_of) * h_w_multiple_of
+        target_w = (w // h_w_multiple_of) * h_w_multiple_of
+
+    target_h = max(h_w_multiple_of, int(target_h))
+    target_w = max(h_w_multiple_of, int(target_w))
+
+    if (h != target_h) or (w != target_w):
+        image_tensor = torch.nn.functional.interpolate(
+            image_tensor,
+            size=(target_h, target_w),
+            mode='bicubic',
+            align_corners=False
+        )
+
+    return image_tensor
+
+
 
 
 def snap_hw_to_multiple_of_32(h: int, w: int, area = 720 * 720) -> tuple[int, int]:
