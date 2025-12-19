@@ -256,7 +256,7 @@ def prepare_everything(args):
     project_config=ProjectConfiguration(
         project_dir=args.get("output_dir", "./outputs"),
         logging_dir=os.path.join(args.get("output_dir", "./outputs"), args.get("logging_subdir", "logging")),
-        automatic_checkpoint_naming=True,
+        automatic_checkpoint_naming=False,
     )
     accelerator = Accelerator(
         # log_with="wandb",

@@ -132,15 +132,7 @@ class VideoAudioDataset(Dataset):
             # with open("debug_read.txt", 'a') as file:
             #     file.write(f"{video_path}\n")
 
-            if self.load_mode == 'raw_video':
-                return self.load_raw_video(video_path, info)
-            elif self.load_mode == 'video_latent':
-                return self.load_video_latent(video_path, info)
-            elif self.load_mode == 'audio_latent':
-                return self.load_audio_latent(video_path, info)
-            elif self.load_mode == 'audio_waveform':
-                return self.load_audio_waveform(video_path, info)
-            elif self.load_mode == 'video_audio':
+            if self.load_mode == 'video_audio':
                 return self.load_raw_video_audio(video_path, info)
             elif self.load_mode == 'video_audio_dpo':
                 return self.load_raw_video_audio_shift(video_path, info)
@@ -155,133 +147,16 @@ class VideoAudioDataset(Dataset):
         
 
 
-    def load_raw_video(self, video_path, info):
-        prompt = info['video_caption']
-        video, _ = self.read_video(video_path)  # [T, C, H, W]
-        if random.random() < self.uncond_prob:
-            prompt = ""
-            
-        return {
-            "video_path": video_path,
-            "video_frames": video,
-            "prompt": prompt,
-            # "negetive_prompt": self.negetive_prompt,
-            # "negetive_prompt_embed": self.negetive_prompt_embed if self.negetive_prompt_embed is not None else 0
-        }
-    
-    def load_video_latent(self, video_path, info):
-        prompt = info['video_caption']
-        video_latent = torch.load(info['video_latent'])  # [C, T, H, W]
-        if random.uniform(0,1) < self.uncond_prob:
-            prompt = ""
-
-        return {
-            "video_path": video_path,
-            "video_latent": video_latent,
-            "prompt": prompt,
-            # "negetive_prompt": self.negetive_prompt,
-            # "negetive_prompt_embed": self.negetive_prompt_embed if self.negetive_prompt_embed is not None else 0
-        }
-    
-    def load_audio_latent(self, video_path, info):
-        prompt = info['audio_caption']
-        audio_latent = torch.load(info['audio_latent'])  # [C, T, H, W]
-        if random.uniform(0,1) < self.uncond_prob:
-            prompt = ""
-
-        return {
-            "video_path": video_path,
-            "audio_latent": audio_latent,
-            "prompt": prompt,
-            # "negetive_prompt": self.negetive_prompt,
-            # "negetive_prompt_embed": self.negetive_prompt_embed if self.negetive_prompt_embed is not None else 0
-        }
-
-
-    def load_audio_waveform(self, video_path, info):
-        prompt = info['audio_caption']
-        # prompt = info['label'] ####
-        waveform, _ = self.read_audio(video_path)
-
-        # # waveform, sr = torchaudio.load(video_path)
-        
-        # # # Convert to target number of channels (mono or stereo)
-        # # num_channels = waveform.shape[0]
-        # # if num_channels != self.target_channels:
-        # #     if self.target_channels == 1 and num_channels > 1:
-        # #         waveform = waveform[0:1]
-        # #     elif self.target_channels == 2 and num_channels == 1:
-        # #         waveform = waveform.repeat(2, 1)
-        # #     else:
-        # #         raise
-    
-        # # # Calculate target number of samples
-        # # target_samples = int(self.target_duration * sr)
-        # # current_samples = waveform.shape[1]
-        # # if current_samples > target_samples:
-        # #     max_start = current_samples - target_samples
-        # #     start = random.randint(0, max_start)
-        # #     waveform = waveform[:, start:start+target_samples]
-        # # elif current_samples < target_samples:
-        # #     padding = target_samples - current_samples
-        # #     waveform = torch.nn.functional.pad(waveform, (0, padding), mode='constant', value=0)
-
-        # # # Resample audio to target sample rate
-        # # if sr != self.target_sr:
-        # #     resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=self.target_sr)
-        # #     waveform = resampler(waveform)
-        # #     sr = self.target_sr
-
-        if random.uniform(0,1) < self.uncond_prob:
-            prompt = ""
-
-
-        return {
-            "video_path": video_path,
-            "audio_waveform": waveform,
-            "prompt": prompt,
-            "negetive_prompt": self.negetive_prompt,
-        }
-
     def load_raw_video_audio(self, video_path, info):
         v_prompt = info['video_caption']
         a_prompt = info['audio_caption']
+        waveform, raw_sr = torchaudio.load(video_path, backend='ffmpeg')
+        max_start = waveform.shape[1] - int(self.target_duration * raw_sr)
+        start_duration = random.randint(0, max_start-1) / raw_sr
+        
+        waveform1, start_duration = self.read_audio(video_path, start_duration)
+        video_pixel1, start_duration = self.read_video(video_path, start_duration = start_duration)
 
-
-        # Audio Waveform
-        # waveform, sr = torchaudio.load(video_path)
-        # num_channels = waveform.shape[0]
-        # if num_channels != self.target_channels:
-        #     if self.target_channels == 1 and num_channels > 1:
-        #         waveform = waveform[0:1]
-        #     elif self.target_channels == 2 and num_channels == 1:
-        #         waveform = waveform.repeat(2, 1)
-        #     else:
-        #         raise
-        # if sr != self.target_sr:
-        #     resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=self.target_sr)
-        #     waveform = resampler(waveform)
-        #     sr = self.target_sr
-
-        # target_samples = int(self.target_duration * sr)
-        # current_samples = waveform.shape[1]
-        # if current_samples > target_samples:
-        #     max_start = current_samples - target_samples
-        #     start = random.randint(0, max_start-1)
-        #     end = start+target_samples
-        #     waveform = waveform[:, start:end]
-        # elif current_samples < target_samples:
-        #     padding = target_samples - current_samples
-        #     start = 0
-        #     end = current_samples
-        #     waveform = torch.nn.functional.pad(waveform, (0, padding), mode='constant', value=0)
-
-        # Video Pixel
-        # start_duration = start / sr
-        # video_pixel = self.read_video(video_path, start_duration = start_duration)  # [T, C, H, W]
-
-        waveform, start_duration = self.read_audio(video_path)
-        video_pixel, _ = self.read_video(video_path, start_duration = start_duration)  # [T, C, H, W]
 
         if random.uniform(0,1) < self.uncond_prob:
             v_prompt = ""
@@ -290,8 +165,8 @@ class VideoAudioDataset(Dataset):
 
         return {
             "video_path": video_path,
-            "video_pixel": video_pixel,
-            "audio_waveform": waveform,
+            "video_pixel": video_pixel1,
+            "audio_waveform": waveform1,
             "v_prompt": v_prompt,
             "a_prompt": a_prompt,
         }
@@ -440,7 +315,7 @@ def build_video_loader(args):
                             num_workers=args.num_workers, 
                             prefetch_factor=args.prefetch_factor,
                             shuffle=args.shuffle,
-                            pin_memory=True,
+                            pin_memory=False,
                             )
     return dataloader
 

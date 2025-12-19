@@ -273,10 +273,10 @@ def log_validation(
                 accelerator.wait_for_everyone()
                 print(accelerator.device, sync_times)
 
-                
-        accelerator.wait_for_everyone()
-        # TODO Add EMA
-        ema.copy_temp_to(transformer_training_parameters)
+
+        ema.copy_temp_to(transformer_training_parameters)     
+        accelerator.wait_for_everyone()        
+
         # Clear cache after validation
         torch.cuda.empty_cache()
         gc.collect()
@@ -331,7 +331,6 @@ def training_step(batch,
         # # #     v_path = f"test{i}.mp4"                
         # # #     save_video(v_path, generated_video[i], generated_audio[i][0], fps=24, sample_rate=16000)
 
-        # # Add noise
         v_noise = torch.randn_like(v_latents[:group_size]).detach()
         a_noise = torch.randn_like(a_latents[:group_size]).detach()
         v_noise = torch.concat([v_noise, v_noise], dim = 0)
@@ -339,9 +338,10 @@ def training_step(batch,
         if mode == 'i2v':
             v_noise[:,:,:1] = v_latents[:,:,:1]
         
-        # # Sample timesteps
         timesteps = torch.randint(0, 1000, (group_size,), dtype=torch.int64, device=accelerator.device).detach()
         timesteps = torch.concat([timesteps, timesteps], dim = 0)
+        # # print("\n================================TS================================\n", timesteps, "\n================================TS================================\n")
+        # # print(f"{batch['video_path']} {v_latents.abs().mean()} {v_latents.abs().mean()}\n")
 
         # Apply flow matching noise schedule
         t_v = (timesteps / 1000).to(v_latents.dtype).view(-1, *([1] * (v_latents.ndim - 1)))
@@ -464,9 +464,8 @@ def training_step(batch,
     return v_dpo_loss, a_dpo_loss, v_sft_loss, a_sft_loss, info
 
 
-
-def checkpointing_step(model, accelerator, logger, args, 
-                      ema, transformer_training_parameters, ckpt_idx = 0):
+# MODIFIED
+def checkpointing_step(model, accelerator, logger, args, ckpt_idx = 0):
     ckpt_dir = os.path.join(accelerator.project_dir, 'checkpoints')
     os.makedirs(ckpt_dir, exist_ok=True)
     
@@ -485,15 +484,14 @@ def checkpointing_step(model, accelerator, logger, args,
             for removing_checkpoint in removing_checkpoints:
                 removing_checkpoint = os.path.join(ckpt_dir, removing_checkpoint)
                 shutil.rmtree(removing_checkpoint)
-    # TODO: Add ema
-    ema.copy_ema_to(transformer_training_parameters, store_temp=True)
-
-    accelerator.save_state()
-    lora_save_path = f"{ckpt_dir}/checkpoint_{ckpt_idx}"
-    model.module.base_model.save_pretrained(lora_save_path) if hasattr(model, "module") else model.base_model.save_pretrained(lora_save_path)
-    logger.info(f"Saved state to {ckpt_dir}")
-
-    ema.copy_temp_to(transformer_training_parameters)
+    # MODIFIED: EMA SAVING
+    # ema.copy_ema_to(transformer_training_parameters, store_temp=True)
+    save_path = f"{ckpt_dir}/checkpoint_{ckpt_idx}"
+    model.module.save_pretrained(save_path) if hasattr(model, "module") else model.save_pretrained(save_path)
+    accelerator.save_state(output_dir=save_path)
+    
+    # ema.copy_temp_to(transformer_training_parameters)
+    print(f"Saved state to {save_path}")
 
 def main(args, accelerator):
 
@@ -570,22 +568,35 @@ def main(args, accelerator):
             bias="none",)
 
         # TODO: Set ref model eval() or update ref model on times
+        # MODIFIED
         if hasattr(args.lora_config, 'lora_load_path') and args.lora_config.lora_load_path:
             print(f"Loading LoRA weights from {args.lora_config.lora_load_path}")
-            fusion_model = PeftModel.from_pretrained(
-                fusion_model, 
-                args.lora_config.lora_load_path,
-                adapter_name="learner"
-            )
-            fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="ref")
+            fusion_model = PeftModel.from_pretrained(fusion_model, args.lora_config.lora_load_path, adapter_name="learner")
+            torch.manual_seed(args.seed); random.seed(args.seed)
+            fusion_model.add_adapter("ref", lora_config)
         else:
             torch.manual_seed(args.seed); random.seed(args.seed)
-            fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="ref")
-            torch.manual_seed(args.seed); random.seed(args.seed)
             fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="learner")
-
+            torch.manual_seed(args.seed); random.seed(args.seed)
+            fusion_model.add_adapter("ref", lora_config)
         fusion_model.set_adapter("learner")
         fusion_model.print_trainable_parameters()
+        # if hasattr(args.lora_config, 'lora_load_path') and args.lora_config.lora_load_path:
+        #     print(f"Loading LoRA weights from {args.lora_config.lora_load_path}")
+        #     fusion_model = PeftModel.from_pretrained(
+        #         fusion_model, 
+        #         args.lora_config.lora_load_path,
+        #         adapter_name="learner"
+        #     )
+        #     fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="ref")
+        # else:
+        #     torch.manual_seed(args.seed); random.seed(args.seed)
+        #     fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="ref")
+        #     torch.manual_seed(args.seed); random.seed(args.seed)
+        #     fusion_model = get_peft_model(fusion_model, lora_config, adapter_name="learner")
+        # fusion_model.set_adapter("learner")
+        # fusion_model.print_trainable_parameters()
+        
 
 
     if args.block_config.train_va == True:
@@ -606,7 +617,12 @@ def main(args, accelerator):
         if "learner" in name:
             assert param.requires_grad == True
             transformer_training_parameters.append(param)
-    ema = EMAModuleWrapper(transformer_training_parameters, decay=0.9, update_step_interval=8, device=accelerator.device)
+    # MODIFIED: EMA LOADING AND READING
+    ema = EMAModuleWrapper(transformer_training_parameters, 
+                            decay=args.ema_decay, 
+                            update_step_interval=args.ema_update_step_interval, 
+                            device=accelerator.device)
+    accelerator.register_for_checkpointing(ema)
 
     if args.scale_lr:
         args.learning_rate = (args.learning_rate * args.gradient_accumulation_steps * args.train_batch_size_local * accelerator.num_processes)
@@ -712,13 +728,26 @@ def main(args, accelerator):
             args.resume_from_checkpoint = None
             initial_global_step = 0
         else:
-            accelerator.print(f"Resuming from checkpoint {cur_full_path}")
+            # MODIFIED
             accelerator.load_state(cur_full_path)
-            global_step = (int(dir_name.split('_')[-1]) + 1) * args.checkpointing_steps
+            # # global_step = (int(dir_name.split('_')[-1]) + 1) * args.checkpointing_steps
+            # # initial_global_step = global_step
+            # # first_epoch = global_step // num_update_steps_per_epoch
+            # # iteration = int(global_step // args.checkpointing_steps)
+            # # accelerator.project_configuration.iteration = iteration
+            global_step = (int(dir_name.split('_')[-1]))
             initial_global_step = global_step
-            first_epoch = global_step // num_update_steps_per_epoch
-            iteration = int(global_step // args.checkpointing_steps)
-            accelerator.project_configuration.iteration = iteration
+            first_epoch = global_step * args.gradient_accumulation_steps // num_update_steps_per_epoch
+            skip_steps = global_step * args.gradient_accumulation_steps % len(train_dataloader)
+            train_dataloader = accelerator.skip_first_batches(train_dataloader, skip_steps)
+            fusion_model.module.set_adapter("learner")  if hasattr(fusion_model, "module") else fusion_model.set_adapter("learner")
+            rand_state = torch.load(f"{cur_full_path}/random_states_{accelerator.process_index}.pkl", weights_only=False)
+            # torch.set_rng_state(rand_state['torch_manual_seed'])
+            torch.cuda.set_rng_state(rand_state['torch_cuda_manual_seed'][accelerator.process_index])
+            accelerator.print(f"Resuming from checkpoint {cur_full_path}, \n \
+                                global_step {global_step}, epoch {first_epoch}/{args.num_train_epochs}, dataloader {len(train_dataloader)}")
+
+
 
     """ ****************************  Training.  **************************** """
     # Only show the progress bar once on each machine.
@@ -726,8 +755,7 @@ def main(args, accelerator):
     for epoch in range(first_epoch, args.num_train_epochs):
         fusion_model.train()
         for step, batch in enumerate(train_dataloader):
-            # fusion_model.module.base_model.save_pretrained('log') if hasattr(fusion_model, "module") else fusion_model.base_model.save_pretrained('log')
-            if global_step % args.validation.eval_steps == 0 : # and global_step != 0:
+            if global_step % args.validation.eval_steps == 0 and global_step != 0:
                 log_validation(
                     config=args.validation,
                     video_config=video_config,
@@ -778,13 +806,12 @@ def main(args, accelerator):
                 global_step += 1
                 ema.step(transformer_training_parameters, global_step)
                 if global_step % args.checkpointing_steps == 0:
+                    # MODIFIED
                     checkpointing_step(model = fusion_model,
                                        accelerator = accelerator, 
                                        logger = logger, 
                                        args = args, 
-                                       ema = ema,
-                                       transformer_training_parameters = transformer_training_parameters,
-                                       ckpt_idx = int(global_step // args.checkpointing_steps - 1))
+                                       ckpt_idx = global_step)
 
             logs = {"loss":             loss.detach().item(),
                     "dpo_loss_v":       dpo_loss_v.mean().detach().item(), 
@@ -815,14 +842,13 @@ def main(args, accelerator):
                 break
 
     # Save the lora layers
+    # MODIFIED
     logger.info("=> Saving the trained model ...")
     checkpointing_step(model = fusion_model,
                         accelerator = accelerator, 
                         logger = logger, 
                         args = args, 
-                        ema = ema,
-                        transformer_training_parameters = transformer_training_parameters,
-                        ckpt_idx = int(global_step // args.checkpointing_steps - 1))
+                        ckpt_idx = global_step)
     log_validation(
         config=args.validation,
         video_config=video_config,

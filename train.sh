@@ -54,10 +54,10 @@ GPU_NUMS=4
 
 
 
- CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
-    --main_process_port 29503 \
-    worker/text_to_video_audio_sft_base_ovi.py \
-    --config config/ttva_sft_ovi.yaml 
+# # # # #  CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
+# # # # #     --main_process_port 29503 \
+# # # # #     worker/text_to_video_audio_sft_base_ovi.py \
+# # # # #     --config config/ttva_sft_ovi.yaml 
     
 
 : "
@@ -71,8 +71,8 @@ GPU_NUMS=4
 
  
 
-# # # #  CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
-# # # #     --main_process_port 29503 \
-# # # #     worker/text_to_video_audio_dpo_dsft_base_ovi.py \
-# # # #     --config config/ttva_dpo_dsft_ovi.yaml 
+ CUDA_VISIBLE_DEVICES=$GPU_IDS accelerate launch --num_processes=$GPU_NUMS \
+    --main_process_port 29503 \
+    worker/text_to_video_audio_dpo_dsft_base_ovi.py \
+    --config config/ttva_dpo_dsft_ovi.yaml 
 

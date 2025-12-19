@@ -8,7 +8,7 @@ hub_model_id  : null
 tracker_name  : null
 ovi_mode    : i2v # t2v i2v MODIFIED
 # dynamic_mode: DPO
-output_dir  : ./log/avsync_ovi_i2v_sft_bs2_15 ####################### bs_lr
+output_dir  : ./log/avsync_ovi_i2v_sft_bs2_15_ ####################### bs_lr
 report_to   : wandb   
 ckpt_subdir : checkpoints
 logging_subdir: logging
@@ -17,7 +17,7 @@ logging_subdir: logging
 wandb_init_args:
   mode      : "online" 
   project   : "Ovi"
-  name      : "avsync_ovi_i2v_sft_bs2_15"     #######################
+  name      : "avsync_ovi_i2v_sft_bs2_15_"     #######################
   tags      : null
   notes     : ""
 
@@ -50,14 +50,14 @@ mixed_precision : bf16   # Options: ["null", "fp16", "bf16"]
 allow_tf32      : false 
 # matmul_precision  : medium 
 # Steps and saving
-num_train_epochs        : 16       #### MODIFIED
+num_train_epochs        : 32       #### MODIFIED
 max_train_steps         : null 
-checkpointing_steps     : 800    
+checkpointing_steps     : 1000    
 checkpoints_total_limit : 40 
 # For batch and LR setting
-num_workers             : 4
+num_workers             : 3        
 train_batch_size_local  : 2        #### MODIFIED
-gradient_accumulation_steps : 1    #### MODIFIED
+gradient_accumulation_steps : 1    
 learning_rate   : 1e-5             
 dpo_beta : 1e-1                              
 scale_lr        : false     
@@ -68,6 +68,8 @@ lr_power        : 1.0
 # For optimizing training
 enable_slicing  : false 
 enable_tiling   : false 
+ema_update_step_interval: 1
+ema_decay               : 0.9
 gradient_checkpointing  : true
 find_unused_parameters  : true  
 
@@ -97,7 +99,7 @@ hy_dataloader:
   video_index_file: "/home/chengxin/chengxin/vagen/data/ttva/avsync_train_easy.json"    # MODIFIED
   batch_size : ${train_batch_size_local}  
   # dataset setting
-  load_mode: "video_audio_dpo" # video_audio_dpo  video_audio
+  load_mode: "video_audio" # video_audio_dpo  video_audio
   video_size: [992, 512]
   fps : 24                  
   max_frames: 121            

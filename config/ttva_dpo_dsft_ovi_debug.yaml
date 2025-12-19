@@ -8,7 +8,7 @@ hub_model_id  : null
 tracker_name  : null
 ovi_mode    : i2v # t2v i2v MODIFIED
 dynamic_mode: DPO_SFT
-output_dir  : ./log/avsync_ovi_i2v_dpo_sft_15_11_ ####################### dynamicmode_lr_beta_weight
+output_dir  : ./log/avsync_ovi_i2v_dpo_sft_15_11_debug ####################### dynamicmode_lr_beta_weight
 report_to   : wandb   
 ckpt_subdir : checkpoints
 logging_subdir: logging
@@ -17,7 +17,7 @@ sft_loss_weight: 1
 wandb_init_args:
   mode      : "online" 
   project   : "Ovi"
-  name      : "avsync_ovi_i2v_dpo_sft_15_11_"     #######################
+  name      : "avsync_ovi_i2v_dpo_sft_15_11_debug"     #######################
   tags      : null
   notes     : ""
 
@@ -43,22 +43,22 @@ optimize_params : null
 
 
 # Training parameters
-resume_from_checkpoint  : null # '/home/chengxin/chengxin/vagen/log/wan_sd_ttva_55/checkpoints/checkpoint_8'
+resume_from_checkpoint  : null # /home/chengxin/chengxin/vagen/log/avsync_ovi_i2v_dpo_sft_15_11_debug/checkpoints/checkpoint_1 # /home/chengxin/chengxin/vagen/log/avsync_ovi_i2v_dpo_sft_15_11_debug/checkpoints/checkpoint_5 # '/home/chengxin/chengxin/vagen/log/wan_sd_ttva_55/checkpoints/checkpoint_8'
 # Seed and precision
 seed            : 103
 mixed_precision : bf16   
 allow_tf32      : false 
 # matmul_precision  : medium 
 # Steps and saving
-num_train_epochs        : 16     
+num_train_epochs        : 1     
 max_train_steps         : null 
-checkpointing_steps     : 1000    
+checkpointing_steps     : 1    
 checkpoints_total_limit : 40 
 # For batch and LR setting
 num_workers             : 3
 train_batch_size_local  : 1   
 gradient_accumulation_steps : 1
-learning_rate   : 1e-5             
+learning_rate   : 1e-4           
 dpo_beta : 1e-1                              
 scale_lr        : false     
 lr_scheduler    : "cosine_with_restarts"  
@@ -123,13 +123,13 @@ validation:
     num_train_timesteps: 1000
   
   eval_steps: ${checkpointing_steps}
-  prompt_index_file: data/ttva/avsync_test_easy.json  
+  prompt_index_file: data/ttva/avsync_test_easy_debug.json  
   mode: ${ovi_mode}
   batch_size : 1
   num_va_per_prompt: 1
   seed: ${seed}
   slg_layer: 11
-  num_inference_steps: 30                                                           
+  num_inference_steps: 5                                                           
                        
   v_negative_prompt : "jitter, bad hands, blur, distortion"
   video_size: ${hy_dataloader.video_size}
