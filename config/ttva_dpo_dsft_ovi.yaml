@@ -6,9 +6,9 @@ hub_token     : null
 hub_model_id  : null
 # For logging setting
 tracker_name  : null
-ovi_mode    : i2v # t2v i2v MODIFIED
-dynamic_mode: DPO_SFT
-output_dir  : ./log/avsync_ovi_i2v_dpo_sft_15_11_ ####################### dynamicmode_lr_beta_weight
+ovi_mode    : i2v # t2v i2v 
+dynamic_mode: DPO
+output_dir  : ./log/avsync_recap_oa_ovi_i2v_dpo_15_11_shift ####################### dynamicmode_lr_beta_weight_shift
 report_to   : wandb   
 ckpt_subdir : checkpoints
 logging_subdir: logging
@@ -17,26 +17,26 @@ sft_loss_weight: 1
 wandb_init_args:
   mode      : "online" 
   project   : "Ovi"
-  name      : "avsync_ovi_i2v_dpo_sft_15_11_"     #######################
+  name      : "avsync_recap_oa_ovi_i2v_dpo_15_11_shift"     #######################
   tags      : null
   notes     : ""
 
 # Model setting for Ovi
 ckpt_dir: "../Ovi/ckpts"                                     
 fusion_checkpoint_path: "../Ovi/ckpts/Ovi/model.safetensors" 
+trained_checkpoint_path: null # "./log/avsync_ovi_i2v_sft_bs2_15/checkpoints/checkpoint_3000" ## MODIFIED
 
-
-# Ovi model trainable setting MODIFIED
+# Ovi model trainable setting MODIFIED lora_modules
 lora_config:
   lora_load_path: null
   use_lora: true
   rank: 128  
   lora_alpha: 64
   lora_modules: [ 
-    'k_fusion', 'v_fusion',
-    'self_attn.q', 'self_attn.k', 'self_attn.v', 'self_attn.o', 
-    'cross_attn.q', 'cross_attn.k', 'cross_attn.v', 'cross_attn.o'
+    'k_fusion', 'v_fusion'
   ]
+    # 'self_attn.q', 'self_attn.k', 'self_attn.v', 'self_attn.o', 
+    # 'cross_attn.q', 'cross_attn.k', 'cross_attn.v', 'cross_attn.o'
 block_config:
   train_va: false   
 optimize_params : null 
@@ -96,7 +96,7 @@ prodigy_safeguard_warmup    : false
 
 
 hy_dataloader:
-  video_index_file: "data/ttva/avsync_train_easy.json"   
+  video_index_file: "data/ttva/avsync_train_recap_oa.json"   ## MODIFIED
   batch_size : ${train_batch_size_local}  
   # dataset setting
   load_mode: "video_audio_dpo" # video_audio_dpo  video_audio
@@ -107,11 +107,11 @@ hy_dataloader:
   target_channels: 1          
   target_duration: 5.0      
   uncond_prob: 0.0          
-  weights: [0,0,10]         ##########["mask_video", "mask_audio", "shift"]  ############# w1 [0,0,10]   w2 [10,10,10] 
+  weights: [0,0,10,0]         ##########["mask_video", "mask_audio", "shift", "replace"]  ############# w1 [0,0,10]   w2 [10,10,10] 
   # DataLoader parameters
   shuffle: true               
   num_workers: ${num_workers}
-  prefetch_factor: 2
+  prefetch_factor: 1
 
 
 
@@ -123,7 +123,7 @@ validation:
     num_train_timesteps: 1000
   
   eval_steps: ${checkpointing_steps}
-  prompt_index_file: data/ttva/avsync_test_easy.json  
+  prompt_index_file: data/ttva/avsync_test_recap_oa.json    ## MODIFIED
   mode: ${ovi_mode}
   batch_size : 1
   num_va_per_prompt: 1

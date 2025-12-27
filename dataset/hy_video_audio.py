@@ -46,7 +46,7 @@ class VideoAudioDataset(Dataset):
         self.target_duration = target_duration
 
         # model
-        self.modes = ["mask_video", "mask_audio", "shift"]
+        self.modes = ["mask_video", "mask_audio", "shift", "replace"]
         self.weights = weights
 
 
@@ -248,7 +248,24 @@ class VideoAudioDataset(Dataset):
             # min_amp = 0.1 
             # env = 1.0 - (1.0 - min_amp) * 0.5 * (1.0 - torch.cos(2 * torch.pi * t))
             # waveform2[:, mask_start_sample:mask_end_sample] = waveform2[:, mask_start_sample:mask_end_sample] * 0.001
-        
+
+        ## Replace
+        elif mode == 'replace':
+            video_pixel1, start_duration = self.read_video(video_path, start_duration = start_duration)
+            waveform1, start_duration = self.read_audio(video_path, start_duration)
+            waveform2 = copy.deepcopy(waveform1)
+            video_pixel2 = copy.deepcopy(video_pixel1)
+
+            idx_ = random.randint(0, len(self.samples)) 
+            replace_video_path, info = self.samples[idx_]
+            waveform_new, raw_sr = torchaudio.load(replace_video_path, backend='ffmpeg')
+            max_start = waveform_new.shape[1] - int(self.target_duration * raw_sr)
+            start_duration = random.randint(0, max_start-1) / raw_sr
+            if random.uniform(0,1) < 0.5:
+                waveform2, start_duration2 = self.read_audio(replace_video_path, start_duration)  
+            else:
+                video_pixel2, start_duration2 = self.read_video(replace_video_path, start_duration = start_duration)  
+
         ## 
         else:
             raise NotImplementedError("Other Lose Pair Contruction Mode is not Supported.")

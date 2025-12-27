@@ -6,7 +6,7 @@ hub_token     : null
 hub_model_id  : null
 # For logging setting
 tracker_name  : null
-ovi_mode    : i2v # t2v i2v MODIFIED
+ovi_mode    : i2v # t2v i2v 
 # dynamic_mode: DPO
 output_dir  : ./log/avsync_ovi_i2v_sft_bs2_15_ ####################### bs_lr
 report_to   : wandb   
@@ -24,9 +24,9 @@ wandb_init_args:
 # Model setting for Ovi
 ckpt_dir: "/home/chengxin/chengxin/Ovi/ckpts"                                      # Ovi checkpoint directory
 fusion_checkpoint_path: "/home/chengxin/chengxin/Ovi/ckpts/Ovi/model.safetensors"  # Fusion model checkpoint
+trained_checkpoint_path: null
 
-
-# Ovi model trainable setting MODIFIED
+# Ovi model trainable setting 
 lora_config:
   lora_load_path: null
   use_lora: true
@@ -43,20 +43,20 @@ optimize_params : null # ["fusion"]
 
 
 # Training parameters
-resume_from_checkpoint  : null #/home/chengxin/chengxin/vagen/log/avsync_ovi_i2v_sft_bs2_15/checkpoints/checkpoint_0 # '/home/chengxin/chengxin/vagen/log/wan_sd_ttva_55/checkpoints/checkpoint_8'
+resume_from_checkpoint  : null # /home/chengxin/chengxin/vagen/log/avsync_ovi_i2v_sft_bs2_15_/checkpoints/checkpoint_3000 
 # Seed and precision
 seed            : 103
-mixed_precision : bf16   # Options: ["null", "fp16", "bf16"]
+mixed_precision : bf16   
 allow_tf32      : false 
 # matmul_precision  : medium 
 # Steps and saving
-num_train_epochs        : 32       #### MODIFIED
+num_train_epochs        : 32       
 max_train_steps         : null 
 checkpointing_steps     : 1000    
 checkpoints_total_limit : 40 
 # For batch and LR setting
 num_workers             : 3        
-train_batch_size_local  : 2        #### MODIFIED
+train_batch_size_local  : 2        
 gradient_accumulation_steps : 1    
 learning_rate   : 1e-5             
 dpo_beta : 1e-1                              
@@ -96,7 +96,7 @@ prodigy_safeguard_warmup    : false
 
 
 hy_dataloader:
-  video_index_file: "/home/chengxin/chengxin/vagen/data/ttva/avsync_train_easy.json"    # MODIFIED
+  video_index_file: "/home/chengxin/chengxin/vagen/data/ttva/avsync_train_easy.json"    
   batch_size : ${train_batch_size_local}  
   # dataset setting
   load_mode: "video_audio" # video_audio_dpo  video_audio
@@ -123,13 +123,13 @@ validation:
     num_train_timesteps: 1000
   
   eval_steps: ${checkpointing_steps}
-  prompt_index_file: /home/chengxin/chengxin/vagen/data/ttva/avsync_test_easy.json    # MODIFIED
+  prompt_index_file: /home/chengxin/chengxin/vagen/data/ttva/avsync_test_easy.json    
   mode: ${ovi_mode}
   batch_size : 1
   num_va_per_prompt: 1
   seed: ${seed}
   slg_layer: 11
-  num_inference_steps: 30                                                             # MODIFIED
+  num_inference_steps: 30                                                             
                        
   v_negative_prompt : "jitter, bad hands, blur, distortion"
   video_size: ${hy_dataloader.video_size}

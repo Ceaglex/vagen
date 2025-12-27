@@ -6,6 +6,8 @@ from tqdm.auto import tqdm
 import copy
 import soundfile as sf
 import json
+from safetensors.torch import load_model
+from accelerate.checkpointing import load_custom_state
 
 import random
 import torch
@@ -739,6 +741,9 @@ def main(args, accelerator):
             initial_global_step = global_step
             first_epoch = global_step * args.gradient_accumulation_steps // num_update_steps_per_epoch
             skip_steps = global_step * args.gradient_accumulation_steps % len(train_dataloader)
+            ## TODO: 目前skip steps有问题。跳过了dataloader之后，后面的dataloader都会改变。
+            ## 所以暂时把skip_steps设置成 0
+            skip_steps = 0
             train_dataloader = accelerator.skip_first_batches(train_dataloader, skip_steps)
             fusion_model.module.set_adapter("learner")  if hasattr(fusion_model, "module") else fusion_model.set_adapter("learner")
             rand_state = torch.load(f"{cur_full_path}/random_states_{accelerator.process_index}.pkl", weights_only=False)
@@ -746,7 +751,13 @@ def main(args, accelerator):
             torch.cuda.set_rng_state(rand_state['torch_cuda_manual_seed'][accelerator.process_index])
             accelerator.print(f"Resuming from checkpoint {cur_full_path}, \n \
                                 global_step {global_step}, epoch {first_epoch}/{args.num_train_epochs}, dataloader {len(train_dataloader)}")
-
+    # MODIFIED
+    if args.trained_checkpoint_path is not None:
+        # print(accelerator.unwrap_model(fusion_model).__next__().mean())
+        load_model(accelerator.unwrap_model(fusion_model), f"{args.trained_checkpoint_path}/model.safetensors")
+        load_custom_state(accelerator._custom_objects[0], args.trained_checkpoint_path, 0) # EMA
+        # accelerator.load_state(args.trained_checkpoint_path)
+        print(f"Load trained model weight from {args.trained_checkpoint_path}")
 
 
     """ ****************************  Training.  **************************** """
@@ -755,7 +766,7 @@ def main(args, accelerator):
     for epoch in range(first_epoch, args.num_train_epochs):
         fusion_model.train()
         for step, batch in enumerate(train_dataloader):
-            if global_step % args.validation.eval_steps == 0 and global_step != 0:
+            if global_step % args.validation.eval_steps == 0: # and global_step != 0:
                 log_validation(
                     config=args.validation,
                     video_config=video_config,

@@ -6,6 +6,8 @@ from tqdm.auto import tqdm
 import copy
 import soundfile as sf
 import json
+from safetensors.torch import load_model
+from accelerate.checkpointing import load_custom_state
 
 import random
 import torch
@@ -122,7 +124,6 @@ def log_validation(
     mode = config.mode
     do_classifier_free_guidance = (a_guidance_scale > 1.0) or (v_guidance_scale > 1.0)
     fusion_model.eval()
-    # TODO: Add ema
     fusion_model.module.set_adapter("learner") if hasattr(fusion_model, "module") else fusion_model.set_adapter("learner")
     ema.copy_ema_to(transformer_training_parameters, store_temp=True)
 
@@ -275,7 +276,6 @@ def log_validation(
 
                 
         accelerator.wait_for_everyone()
-        # TODO Add EMA
         ema.copy_temp_to(transformer_training_parameters)
         # Clear cache after validation
         torch.cuda.empty_cache()
@@ -297,7 +297,6 @@ def training_step(batch,
                   mode,
                   load_dtype):
 
-    # TODO: Check DPO Loss and dataset W-L data pair order
     text_prompt = batch['v_prompt']  
     text_prompt = [f"{batch['v_prompt'][i]} <AUDCAP>{batch['a_prompt'][i]}<ENDAUDCAP>" for i in range(len(batch['v_prompt']))] # Use video caption as the main prompt
     waveform = batch['audio_waveform'][:,0,:]
@@ -548,7 +547,6 @@ def main(args, accelerator):
             lora_dropout=0.1,
             bias="none",)
 
-        # TODO: Set ref model eval() or update ref model on times
         # MODIFIED
         if hasattr(args.lora_config, 'lora_load_path') and args.lora_config.lora_load_path:
             print(f"Loading LoRA weights from {args.lora_config.lora_load_path}")
@@ -575,7 +573,6 @@ def main(args, accelerator):
             if any(opt_param in name for opt_param in args.optimize_params):
                 param.requires_grad = True
 
-    ## TODO: Add EMA
     # Filter parameters based on optimize_params
     transformer_training_parameters = list()
     for name, param in fusion_model.named_parameters():
@@ -705,14 +702,23 @@ def main(args, accelerator):
             initial_global_step = global_step
             first_epoch = global_step * args.gradient_accumulation_steps // num_update_steps_per_epoch
             skip_steps = global_step * args.gradient_accumulation_steps % len(train_dataloader)
-            train_dataloader = accelerator.skip_first_batches(train_dataloader, skip_steps)
+            ## TODO: 目前skip steps有问题。跳过了dataloader之后，后面的dataloader都会改变。
+            ## 所以暂时把skip_steps设置成 0
+            skip_steps = 0
+            train_dataloader = accelerator.skip_first_batches(train_dataloader, skip_steps)  
             fusion_model.module.set_adapter("learner")  if hasattr(fusion_model, "module") else fusion_model.set_adapter("learner")
             rand_state = torch.load(f"{cur_full_path}/random_states_{accelerator.process_index}.pkl", weights_only=False)
             # torch.set_rng_state(rand_state['torch_manual_seed'])
             torch.cuda.set_rng_state(rand_state['torch_cuda_manual_seed'][accelerator.process_index])
             accelerator.print(f"Resuming from checkpoint {cur_full_path}, \n \
                                 global_step {global_step}, epoch {first_epoch}/{args.num_train_epochs}, dataloader {len(train_dataloader)}")
-
+    # MODIFIED
+    if args.trained_checkpoint_path is not None:
+        # print(accelerator.unwrap_model(fusion_model).__next__().mean())
+        load_model(accelerator.unwrap_model(fusion_model), f"{args.trained_checkpoint_path}/model.safetensors")
+        load_custom_state(accelerator._custom_objects[0], args.trained_checkpoint_path, 0) # EMA
+        # accelerator.load_state(args.trained_checkpoint_path)
+        print(f"Load trained model weight from {args.trained_checkpoint_path}")
                                 
 
     """ ****************************  Training.  **************************** """
@@ -721,7 +727,7 @@ def main(args, accelerator):
     for epoch in range(first_epoch, args.num_train_epochs):
         fusion_model.train()
         for step, batch in enumerate(train_dataloader):
-            if global_step % args.validation.eval_steps == 0: # and global_step != 0:
+            if global_step % args.validation.eval_steps == 0 and global_step != 0:
                 log_validation(
                     config=args.validation,
                     video_config=video_config,
